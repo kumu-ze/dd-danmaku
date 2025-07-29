@@ -2,7 +2,7 @@
 
 ## Emby danmaku extension
 
-![演示](https://raw.githubusercontent.com/kutongling/emby-danmaku/master/演示.jpg)
+![演示]([https://raw.githubusercontent.com/kumu-ze/emby-danmaku/master/演示.jpg](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E6%BC%94%E7%A4%BA.jpg))
 
 ## 版本变化
 
@@ -81,10 +81,10 @@
 
 ## 展示
 
-![1](https://raw.githubusercontent.com/kutongling/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-09.png)
-![2](https://raw.githubusercontent.com/kutongling/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-21.png)
-![3](https://raw.githubusercontent.com/kutongling/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-32.png)
-![4](https://raw.githubusercontent.com/kutongling/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-40.png)
+![1]([https://raw.githubusercontent.com/kumu-ze/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-09.png](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-01-27_01-19-09.png))
+![2]([https://raw.githubusercontent.com/kumu-ze/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-21.png](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-01-27_01-19-21.png))
+![3]([https://raw.githubusercontent.com/kumu-ze/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-32.png](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-01-27_01-19-32.png))
+![4]([https://raw.githubusercontent.com/kumu-ze/emby-danmaku/master/图片/PixPin_2025-01-27_01-19-40.png](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-01-27_01-19-40.png))
 
 ## 引用项目
 
