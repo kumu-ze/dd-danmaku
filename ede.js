@@ -12,65 +12,160 @@
 
 (async function() {
   'use strict';
-  // ------ configs start------
-  const check_interval = 200;
-  const chConverTtitle = ['当前状态: 未启用', '当前状态: 转换为简体', '当前状态: 转换为繁体'];
+  // ------ Centralized Configuration ------
+  const CONFIG = {
+    intervals: {
+      check: 200,
+      retry: 500,
+      cache: {
+        search: 24 * 60 * 60 * 1000, // 24小时
+        danmaku: 3600000, // 1小时
+        searchLock: 60000 // 1分钟
+      }
+    },
+    ui: {
+      chConverTitles: ['当前状态: 未启用', '当前状态: 转换为简体', '当前状态: 转换为繁体'],
+      icons: {
+        danmaku: ['\uE7A2', '\uE0B9'], // 关闭/开启
+        search: '\uE881',
+        translate: '\uE927',
+        filter: ['\uE3E0', '\uE3D0', '\uE3D1', '\uE3D2'],
+        transparency: ['\uEBDC', '\uEBD9', '\uEBE0', '\uEBE2', '\uEBE2', '\uEBD4', '\uEBD2', '\uE1A4'],
+        infoSwitch: ['\uE8F5', '\uE8F4'], // 关闭/显示
+        moreFilter: '\uE5D3',
+        log: '\uE86D',
+        settings: '\uE8B8',
+        reset: '\uE166'
+      },
+      fontSize: {
+        desktop: 25,
+        mobile: 15
+      }
+    },
+    selectors: {
+      uiAnchor: '\uE034',
+      mediaContainer: 'div[class~="view-videoosd-videoosd"]',
+      media: 'video'
+    },
+    styles: {
+      menubar: { class: 'flex flex-direction-row' },
+      button: { class: 'paper-icon-button-light', is: 'paper-icon-button-light' },
+      rangeSlider: { class: 'emby-slider emby-slider-scalebg emby-slider-nothumb', is: 'emby-slider' },
+      sliderContainer: { class: 'slidercontainer flex-grow emby-slider-container' },
+      sliderWrapper: { class: 'videoOsdVolumeSliderWrapper flex-grow' },
+      sliderDiv: { class: 'videoOsdVolumeControls flex flex-direction-row align-items-center', style: 'position:relative;' },
+      sliderLabel: { class: 'sliderLabel', style: 'margin-right: 1em; min-width: 100px;' },
+      danmakuInfo: 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;'
+    },
+    proxy: {
+      default: ['https://www.kumuze-dd.icu/']
+    }
+  };
 
-  //图标常量
-  // 0:当前状态关闭 1:当前状态打开
-  const danmaku_icons = ['\uE7A2', '\uE0B9'];
-  const search_icon = '\uE881';
-  const translate_icon = '\uE927';
-  const filter_icons = ['\uE3E0', '\uE3D0', '\uE3D1', '\uE3D2'];
-  const transparency_icons = ['\uEBDC', '\uEBD9', '\uEBE0', '\uEBE2', '\uEBE2', '\uEBD4', '\uEBD2', '\uE1A4'];
-  const info_switch_icons = ['\uE8F5', '\uE8F4']; // 关闭/显示
-  const more_filter_icon = '\uE5D3'; // 更多过滤图标
-  const log_icon = '\uE86D'; // 添加日志图标常量
-  const settings_icon = '\uE8B8'; // 设置图标
-  const reset_icon = '\uE166'; // 重置图标
-
-  //通用参数常量
-  const menubarOptions = {
-    class: 'flex flex-direction-row',
-  };
-  const buttonOptions = {
-    class: 'paper-icon-button-light',
-    is: 'paper-icon-button-light',
-  };
-  const rangeSliderOptions = {
-    class: 'emby-slider emby-slider-scalebg emby-slider-nothumb',
-    is: 'emby-slider',
-  };
-  const sliderContainerOptions = {
-    class: 'slidercontainer flex-grow emby-slider-container',
-  };
-  const sliderWrapperOptions = {
-    class: 'videoOsdVolumeSliderWrapper flex-grow',
-  };
-  const sliderdivOptions = {
-    class: 'videoOsdVolumeControls flex flex-direction-row align-items-center',
-    style: 'position:relative;',
-  };
-  const sliderLabelOptions = {
-    class: 'sliderLabel',
-    style: 'margin-right: 1em; min-width: 100px;'
+  // ------ Storage Manager ------
+  const StorageManager = {
+    cache: new Map(),
+    
+    get(key, defaultValue = null) {
+      if (this.cache.has(key)) {
+        return this.cache.get(key);
+      }
+      const value = window.localStorage.getItem(key);
+      const parsedValue = value !== null ? (this.tryParseJSON(value) || value) : defaultValue;
+      this.cache.set(key, parsedValue);
+      return parsedValue;
+    },
+    
+    set(key, value) {
+      const stringValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      this.cache.set(key, value);
+      window.localStorage.setItem(key, stringValue);
+    },
+    
+    tryParseJSON(str) {
+      try {
+        return JSON.parse(str);
+      } catch {
+        return null;
+      }
+    },
+    
+    remove(key) {
+      this.cache.delete(key);
+      window.localStorage.removeItem(key);
+    },
+    
+    clearCache() {
+      this.cache.clear();
+    }
   };
 
-  //定位标志常量
-  const uiAnchorStr = '\uE034';
-  const mediaContainerQueryStr = 'div[class~="view-videoosd-videoosd"]';
-  const mediaQueryStr = 'video';
+  // ------ DOM Element Cache ------
+  const DOMCache = {
+    cache: new Map(),
+    
+    get(selector, context = document) {
+      const key = `${selector}:${context === document ? 'document' : 'context'}`;
+      if (this.cache.has(key)) {
+        const element = this.cache.get(key);
+        // 验证元素是否仍在DOM中
+        if (element && element.isConnected) {
+          return element;
+        }
+        this.cache.delete(key);
+      }
+      
+      const element = context.querySelector(selector);
+      if (element) {
+        this.cache.set(key, element);
+      }
+      return element;
+    },
+    
+    getAll(selector, context = document) {
+      return context.querySelectorAll(selector);
+    },
+    
+    clear() {
+      this.cache.clear();
+    },
+    
+    invalidate(selector) {
+      const keysToDelete = [];
+      for (const [key] of this.cache) {
+        if (key.startsWith(selector + ':')) {
+          keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach(key => this.cache.delete(key));
+    }
+  };
 
-  //全局透明度/移动端检测flag
-  var globalOpacity = 1.0;
-  var isMobile = false;
-  //字体大小（桌面/移动）
-  const fontSizeDesktop = 25;
-  const fontSizeMobile = 15;
-  //移动设备检测
-  if (/Mobi|Android|iPhone/i.test(navigator.userAgent)) {
-    isMobile = true;
-  }
+  // ------ Utility Functions ------
+  const Utils = {
+    debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    },
+    
+    throttle(func, limit) {
+      let inThrottle;
+      return function(...args) {
+        if (!inThrottle) {
+          func.apply(this, args);
+          inThrottle = true;
+          setTimeout(() => inThrottle = false, limit);
+        }
+      };
+    }
+  };
 
   //各个控件差异化参数常量
   const displayButtonOpts = {
@@ -84,8 +179,11 @@
       }
       console.log('切换弹幕开关');
       window.ede.danmakuSwitch = (window.ede.danmakuSwitch + 1) % 2;
-      window.localStorage.setItem('danmakuSwitch', window.ede.danmakuSwitch);
-      document.querySelector('#displayDanmaku').children[0].innerText = danmaku_icons[window.ede.danmakuSwitch];
+      StorageManager.set('danmakuSwitch', window.ede.danmakuSwitch);
+      const displayButton = DOMCache.get('#displayDanmaku');
+      if (displayButton) {
+        displayButton.children[0].innerText = CONFIG.ui.icons.danmaku[window.ede.danmakuSwitch];
+      }
       if (window.ede.danmaku) {
         window.ede.danmakuSwitch == 1 ? window.ede.danmaku.show() : window.ede.danmaku.hide();
       }
@@ -94,7 +192,7 @@
   const searchButtonOpts = {
     title: '搜索弹幕',
     id: 'searchDanmaku',
-    innerText: search_icon,
+    innerText: CONFIG.ui.icons.search,
     onclick: () => {
       if (window.ede.loading) {
         console.log('正在加载,请稍后再试');
@@ -107,7 +205,7 @@
   const translateButtonOpts = {
     title: null,
     id: 'translateDanmaku',
-    innerText: translate_icon,
+    innerText: CONFIG.ui.icons.translate,
     onclick: () => {
       if (window.ede.loading) {
         console.log('正在加载,请稍后再试');
@@ -116,9 +214,12 @@
       console.log('切换简繁转换');
       window.ede.chConvert = (window.ede.chConvert + 1) % 3;
       StorageManager.set('chConvert', window.ede.chConvert);
-      document.querySelector('#translateDanmaku').setAttribute('title', chConverTtitle[window.ede.chConvert]);
+      const translateButton = DOMCache.get('#translateDanmaku');
+      if (translateButton) {
+        translateButton.setAttribute('title', CONFIG.ui.chConverTitles[window.ede.chConvert]);
+      }
       reloadDanmaku('reload');
-      console.log(document.querySelector('#translateDanmaku').getAttribute('title'));
+      console.log(translateButton?.getAttribute('title'));
     },
   };
   const filterButtonOpts = {
@@ -130,7 +231,10 @@
       let level = StorageManager.get('danmakuFilterLevel', 0);
       level = ((level ? parseInt(level) : 0) + 1) % 4;
       StorageManager.set('danmakuFilterLevel', level);
-      document.querySelector('#filteringDanmaku').children[0].innerText = filter_icons[level];
+      const filterButton = DOMCache.get('#filteringDanmaku');
+      if (filterButton) {
+        filterButton.children[0].innerText = CONFIG.ui.icons.filter[level];
+      }
       // 添加立即重载弹幕
       reloadDanmaku('reload');
     },
@@ -153,19 +257,19 @@
     onclick: () => {
       console.log('切换弹幕信息显示');
       window.ede.showDanmakuInfo = !window.ede.showDanmakuInfo;
-      window.localStorage.setItem('showDanmakuInfo', window.ede.showDanmakuInfo);
+      StorageManager.set('showDanmakuInfo', window.ede.showDanmakuInfo);
       
       // 更新按钮图标
-      const button = document.querySelector('#switchDanmakuInfo');
+      const button = DOMCache.get('#switchDanmakuInfo');
       if (button) {
         const icon = button.querySelector('.md-icon');
         if (icon) {
-          icon.innerText = info_switch_icons[window.ede.showDanmakuInfo ? 1 : 0];
+          icon.innerText = CONFIG.ui.icons.infoSwitch[window.ede.showDanmakuInfo ? 1 : 0];
         }
       }
       
       // 更新信息显示
-      const infoElement = document.querySelector('#videoOsdDanmakuTitle');
+      const infoElement = DOMCache.get('#videoOsdDanmakuTitle');
       if (infoElement) {
         infoElement.style.display = window.ede.showDanmakuInfo ? 'block' : 'none';
       }
@@ -181,7 +285,7 @@
   const moreFilterButtonOpts = {
     title: '更多过滤选项',
     id: 'moreFilteringDanmaku',
-    innerText: more_filter_icon,
+    innerText: CONFIG.ui.icons.moreFilter,
     onclick: () => {
         console.log('显示更多过滤选项');
         showFilterDialog();
@@ -190,7 +294,7 @@
   const logButtonOpts = {
     title: '显示调试日志',
     id: 'showDanmakuLog',
-    innerText: log_icon,
+    innerText: CONFIG.ui.icons.log,
     onclick: () => {
       showLogDialog();
     },
@@ -198,7 +302,7 @@
   const settingsButtonOpts = {
     title: '弹幕设置',
     id: 'danmakuSettings',
-    innerText: settings_icon,
+    innerText: CONFIG.ui.icons.settings,
     onclick: () => {
       showDanmakuSettingsDialog();
     },
@@ -214,69 +318,61 @@
 
   class EDE {
     constructor() {
-      this.chConvert = 1;
-      if (window.localStorage.getItem('chConvert')) {
-        this.chConvert = window.localStorage.getItem('chConvert');
-      }
+      this.chConvert = StorageManager.get('chConvert', 1);
+      
       // 0:当前状态关闭 1:当前状态打开
-      this.danmakuSwitch = 1;
-      if (window.localStorage.getItem('danmakuSwitch')) {
-        this.danmakuSwitch = parseInt(window.localStorage.getItem('danmakuSwitch'));
-      }
+      this.danmakuSwitch = StorageManager.get('danmakuSwitch', 1);
+      
       this.danmaku = null;
       this.episode_info = null;
       this.ob = null;
       this.loading = false;
-      this.showDanmakuInfo = true; // 添加新属性
-      if (window.localStorage.getItem('showDanmakuInfo') !== null) {
-        this.showDanmakuInfo = window.localStorage.getItem('showDanmakuInfo') === 'true';
-      }
+      this.showDanmakuInfo = StorageManager.get('showDanmakuInfo', true);
       this.originalCount = 0; // 添加原始弹幕数量属性
       this.lastError = null;
       this.corsStatus = '未测试';
       this.autoMatchStatus = '未开始';
       this.lastApiResponse = null;
-      this.filterWords = window.localStorage.getItem('danmakuFilterWords') ?
-      JSON.parse(window.localStorage.getItem('danmakuFilterWords')) : [];
-      this.cacheEnabled = window.localStorage.getItem('danmakuCacheEnabled') !== 'false'; // 默认启用缓存
-      this.buttonOrder = window.localStorage.getItem('danmakuButtonOrder') ?
-      JSON.parse(window.localStorage.getItem('danmakuButtonOrder')) :
-      ['displayDanmaku', 'danmakuSettings', 'filterSettings', 'switchDanmakuInfo', 'searchDanmaku', 'showDanmakuLog'];
+      this.filterWords = StorageManager.get('danmakuFilterWords', []);
+      this.cacheEnabled = StorageManager.get('danmakuCacheEnabled', true);
+      this.buttonOrder = StorageManager.get('danmakuButtonOrder', 
+        ['displayDanmaku', 'danmakuSettings', 'filterSettings', 'switchDanmakuInfo', 'searchDanmaku', 'showDanmakuLog']);
       
       // 添加代理相关配置
-      this.currentProxyIndex = 0;
-      this.customProxyServer = window.localStorage.getItem('danmakuCustomProxy') || '';
-      const savedProxyIndex = window.localStorage.getItem('danmakuProxyIndex');
-      if (savedProxyIndex !== null) {
-        this.currentProxyIndex = parseInt(savedProxyIndex);
-      }
+      this.currentProxyIndex = StorageManager.get('danmakuProxyIndex', 0);
+      this.customProxyServer = StorageManager.get('danmakuCustomProxy', '');
     }
   }
 
   function createRangeSlider(opt, button) {
-    let input = document.createElement('input', rangeSliderOptions);
+    let input = document.createElement('input');
+    Object.assign(input, CONFIG.styles.rangeSlider);
     input.setAttribute('type', opt.type);
     input.setAttribute('step', opt.step);
     input.setAttribute('min', opt.min);
     input.setAttribute('max', opt.max);
     input.setAttribute('value', opt.value);
     input.oninput = opt.oninput;
+    
     let sliderContainer = document.createElement('div');
-    sliderContainer.className = sliderContainerOptions.class;
+    sliderContainer.className = CONFIG.styles.sliderContainer.class;
     sliderContainer.appendChild(input);
+    
     let SliderWrapper = document.createElement('div');
-    SliderWrapper.className = sliderWrapperOptions.class;
+    SliderWrapper.className = CONFIG.styles.sliderWrapper.class;
     SliderWrapper.appendChild(sliderContainer);
+    
     let sliderdiv = document.createElement('div');
-    sliderdiv.className = sliderdivOptions.class;
-    sliderdiv.style = sliderdivOptions.style;
+    sliderdiv.className = CONFIG.styles.sliderDiv.class;
+    sliderdiv.style = CONFIG.styles.sliderDiv.style;
     sliderdiv.appendChild(button);
     sliderdiv.appendChild(SliderWrapper);
     return sliderdiv;
   }
 
   function createButton(opt) {
-    let button = document.createElement('button', buttonOptions);
+    let button = document.createElement('button');
+    Object.assign(button, CONFIG.styles.button);
     button.setAttribute('title', opt.title);
     button.setAttribute('id', opt.id);
     let icon = document.createElement('span');
@@ -288,7 +384,7 @@
   }
 
   function initListener() {
-    let container = document.querySelector(mediaQueryStr);
+    let container = DOMCache.get(CONFIG.selectors.media);
     // 页面未加载
     if (!container) {
       if (window.ede.episode_info) {
@@ -335,7 +431,7 @@
 
   function initUI() {
     // 页面未加载
-    let uiAnchor = getElementsByInnerText('i', uiAnchorStr);
+    let uiAnchor = getElementsByInnerText('i', CONFIG.selectors.uiAnchor);
     if (!uiAnchor || !uiAnchor[0]) {
       return;
     }
@@ -355,20 +451,22 @@
       return;
     }
     // 已初始化
-    if (document.getElementById('danmakuCtr') && !document.getElementById('danmakuCtr').parentNode.parentNode.parentNode.parentNode.parentNode.classList.contains('hide')) {
+    const existingCtr = DOMCache.get('#danmakuCtr');
+    if (existingCtr && !existingCtr.parentNode.parentNode.parentNode.parentNode.parentNode.classList.contains('hide')) {
       return;
     }
     // 开始初始化
     console.log('正在初始化UI');
     // 删除旧控件
-    if (document.getElementById('danmakuCtr')) {
-      document.getElementById('danmakuCtr').remove()
+    if (existingCtr) {
+      existingCtr.remove();
+      DOMCache.invalidate('#danmakuCtr');
     }
     // 弹幕按钮容器div
     let parent = uiAnchor[TargetIndex].parentNode.parentNode.parentNode;
     let menubar = document.createElement('div');
     menubar.id = 'danmakuCtr';
-    menubar.className = menubarOptions.class;
+    menubar.className = CONFIG.styles.menubar.class;
     if (!window.ede.episode_info) {
       menubar.style.opacity = 0.5;
     }
@@ -388,9 +486,9 @@
       const config = buttonConfigs[buttonId];
       if (config) {
         if (buttonId === 'displayDanmaku') {
-          config.innerText = danmaku_icons[window.ede.danmakuSwitch];
+          config.innerText = CONFIG.ui.icons.danmaku[window.ede.danmakuSwitch];
         } else if (buttonId === 'switchDanmakuInfo') {
-          config.innerText = info_switch_icons[window.ede.showDanmakuInfo ? 1 : 0];
+          config.innerText = CONFIG.ui.icons.infoSwitch[window.ede.showDanmakuInfo ? 1 : 0];
         }
         menubar.appendChild(createButton(config));
       }
@@ -464,8 +562,8 @@
       const _episode_key = '_episode_id_rel_' + _id + '_' + episode;
 
       // 检查本地缓存中是否有匹配结果
-      if (is_auto && window.localStorage.getItem(_episode_key)) {
-        return JSON.parse(window.localStorage.getItem(_episode_key));
+      if (is_auto && StorageManager.get(_episode_key)) {
+        return StorageManager.get(_episode_key);
       }
 
       // 如果是手动搜索，直接打开搜索对话框
@@ -477,17 +575,16 @@
       // 使用防重复搜索机制
       const now = Date.now();
       const searchKey = `_search_lock_${_id}`;
-      const lastSearch = window.localStorage.getItem(searchKey);
+      const lastSearch = StorageManager.get(searchKey);
       if (lastSearch) {
-        const lastSearchData = JSON.parse(lastSearch);
-        if (now - lastSearchData.timestamp < 60000) { // 1分钟内不重复搜索
+        if (now - lastSearch.timestamp < CONFIG.intervals.cache.searchLock) { // 1分钟内不重复搜索
           console.log('搜索冷却中，跳过自动匹配');
           return null;
         }
       }
 
       // 更新搜索时间戳
-      window.localStorage.setItem(searchKey, JSON.stringify({ timestamp: now }));
+      StorageManager.set(searchKey, { timestamp: now });
 
       // 首先尝试使用中文名搜索
       let searchResult = await trySearch(animeName);
@@ -544,8 +641,8 @@
     };
 
     // 保存匹配结果
-    window.localStorage.setItem('_anime_id_rel_' + _id, selectedAnime.animeId);
-    window.localStorage.setItem(_episode_key, JSON.stringify(episodeInfo));
+    StorageManager.set('_anime_id_rel_' + _id, selectedAnime.animeId);
+    StorageManager.set(_episode_key, episodeInfo);
 
     window.ede.autoMatchStatus = '自动匹配成功';
     return episodeInfo;
@@ -558,13 +655,12 @@
     }
 
     const cacheKey = `_search_cache_${encodeURIComponent(name)}`;
-    const cachedResult = window.localStorage.getItem(cacheKey);
+    const cachedResult = StorageManager.get(cacheKey);
 
     if (cachedResult) {
-      const cached = JSON.parse(cachedResult);
-      if (cached.timestamp > Date.now() - 24 * 60 * 60 * 1000) { // 24小时缓存
+      if (cachedResult.timestamp > Date.now() - CONFIG.intervals.cache.search) { // 24小时缓存
         window.ede.autoMatchStatus = '使用缓存结果';
-        return cached.data;
+        return cachedResult.data;
       }
     }
 
@@ -572,9 +668,7 @@
   }
 
   // 在全局配置区域添加代理配置
-  const defaultProxyServers = [
-    'https://www.kumuze-dd.icu/'
-  ];
+  const defaultProxyServers = CONFIG.proxy.default;
 
   async function searchAnimeDirectly(name) {
     try {
@@ -595,10 +689,10 @@
 
       if (window.ede.cacheEnabled) {
         // 只在启用缓存时才保存
-        window.localStorage.setItem(`_search_cache_${encodeURIComponent(name)}`, JSON.stringify({
+        StorageManager.set(`_search_cache_${encodeURIComponent(name)}`, {
           timestamp: Date.now(),
           data: animaInfo
-        }));
+        });
       }
 
       return animaInfo;
@@ -606,7 +700,7 @@
       // 如果当前代理失败,尝试切换到备用代理
       if (!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length - 1) {
         window.ede.currentProxyIndex++;
-        window.localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex);
+        StorageManager.set('danmakuProxyIndex', window.ede.currentProxyIndex);
         showTooltip(`正在切换到备用代理服务器 ${window.ede.currentProxyIndex + 1}`);
         return searchAnimeDirectly(name);
       }
@@ -622,13 +716,12 @@
 
     // 检查缓存
     const cacheKey = `_danmaku_cache_${episodeId}`;
-    const cachedData = window.localStorage.getItem(cacheKey);
+    const cachedData = StorageManager.get(cacheKey);
 
     if (cachedData) {
-      const cached = JSON.parse(cachedData);
-      if (cached.timestamp > Date.now() - 3600000) { // 1小时缓存
+      if (cachedData.timestamp > Date.now() - CONFIG.intervals.cache.danmaku) { // 1小时缓存
         console.log('使用缓存弹幕数据');
-        return cached.comments;
+        return cachedData.comments;
       }
     }
 
@@ -656,10 +749,10 @@
 
         if (window.ede.cacheEnabled) {
           // 只在启用缓存时才保存
-          window.localStorage.setItem(`_danmaku_cache_${episodeId}`, JSON.stringify({
+          StorageManager.set(`_danmaku_cache_${episodeId}`, {
             timestamp: Date.now(),
             comments: data.comments
-          }));
+          });
         }
 
         console.log('弹幕下载成功: ' + data.comments.length);
@@ -673,7 +766,7 @@
       // 如果当前代理失败,尝试切换到备用代理
       if (!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length - 1) {
         window.ede.currentProxyIndex++;
-        window.localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex);
+        StorageManager.set('danmakuProxyIndex', window.ede.currentProxyIndex);
         showTooltip(`正在切换到备用代理服务器 ${window.ede.currentProxyIndex + 1}`);
         return getCommentsDirectly(episodeId);
       }
@@ -700,7 +793,7 @@
 
     // 预处理弹幕数据
     const _comments = danmakuFilter(danmakuParser(comments));
-    globalOpacity = parseInt(window.localStorage.getItem('danmakuTransparencyLevel') || 100) / 100;
+    globalOpacity = parseInt(StorageManager.get('danmakuTransparencyLevel', 100)) / 100;
 
     const container = await waitForContainer();
     if (!container) return;
@@ -734,7 +827,7 @@
   }
 
   async function waitForVideoElement() {
-    const video = document.querySelector(mediaQueryStr);
+    const video = DOMCache.get(CONFIG.selectors.media);
     if (video && video.readyState) {
       return video;
     }
@@ -742,7 +835,7 @@
   }
 
   async function waitForContainer() {
-    const containers = document.querySelectorAll(mediaContainerQueryStr);
+    const containers = DOMCache.getAll(CONFIG.selectors.mediaContainer);
     for (const container of containers) {
       if (!container.classList.contains('hide')) {
         return container;
@@ -759,11 +852,11 @@
     window.ede.loading = true;
 
     // 添加视频元素检查
-    const videoElement = document.querySelector(mediaQueryStr);
+    const videoElement = DOMCache.get(CONFIG.selectors.media);
     if (!videoElement || !videoElement.readyState) {
       console.log('视频元素未就绪，等待重试...');
       window.ede.loading = false;
-      setTimeout(() => reloadDanmaku(type), 500);
+      setTimeout(() => reloadDanmaku(type), CONFIG.intervals.retry);
       return;
     }
 
@@ -771,7 +864,7 @@
       // 强制清除缓存，确保简繁体切换后弹幕正确刷新
       Object.keys(localStorage).forEach(key => {
         if (key.startsWith('_danmaku_cache_')) {
-          localStorage.removeItem(key);
+          StorageManager.remove(key);
         }
       });
     }
@@ -801,11 +894,11 @@
             // 确保视频容器已准备就绪
             return new Promise((resolve) => {
               const checkContainer = () => {
-                const container = document.querySelector(mediaContainerQueryStr);
+                const container = DOMCache.get(CONFIG.selectors.mediaContainer);
                 if (container && !container.classList.contains('hide')) {
                   resolve(comments);
                 } else {
-                  setTimeout(checkContainer, 200);
+                  setTimeout(checkContainer, CONFIG.intervals.check);
                 }
               };
               checkContainer();
@@ -819,8 +912,9 @@
       )
       .then(() => {
         window.ede.loading = false;
-        if (document.getElementById('danmakuCtr')) {
-          document.getElementById('danmakuCtr').style.opacity = 1;
+        const danmakuCtr = DOMCache.get('#danmakuCtr');
+        if (danmakuCtr) {
+          danmakuCtr.style.opacity = 1;
         }
       })
       .catch(error => {
@@ -832,8 +926,7 @@
   function danmakuFilter(comments) {
     let _comments = [...comments];
     // 类型过滤
-    const typeFilters = window.localStorage.getItem('danmakuTypeFilter') ?
-        JSON.parse(window.localStorage.getItem('danmakuTypeFilter')) : [];
+    const typeFilters = StorageManager.get('danmakuTypeFilter', []);
 
     _comments = danmakuTypeFilter(_comments, typeFilters);
 
@@ -884,7 +977,7 @@
   }
 
   function danmakuDensityLevelFilter(comments) {
-    let level = parseInt(window.localStorage.getItem('danmakuFilterLevel') ? window.localStorage.getItem('danmakuFilterLevel') : 0);
+    let level = parseInt(StorageManager.get('danmakuFilterLevel', 0));
     if (level == 0) {
       return comments;
     }
@@ -926,7 +1019,7 @@
         const mode = { 6: 'ltr', 1: 'rtl', 5: 'top', 4: 'bottom' }[values[1]];
         if (!mode) return null;
         //const fontSize = Number(values[2]) || 25
-        const fontSize = parseInt(window.localStorage.getItem('danmakuFontSize')) || (isMobile ? fontSizeMobile : fontSizeDesktop);
+        const fontSize = parseInt(StorageManager.get('danmakuFontSize', isMobile ? CONFIG.ui.fontSize.mobile : CONFIG.ui.fontSize.desktop));
         const color = `000000${Number(values[2]).toString(16)}`.slice(-6);
         return {
           text: $comment.m,
@@ -982,11 +1075,11 @@
             style="background: transparent; color: #fff; border: none; flex: 1; padding: 0.7em 1em;">
           <button is="emby-button" id="danmakuSearchBtn" class="paper-icon-button-light"
             title="搜索" style="color: #fff; padding: 0 1em; background: rgba(255, 255, 255, 0.1);">
-            <span class="md-icon">${search_icon}</span>
+            <span class="md-icon">${CONFIG.ui.icons.search}</span>
           </button>
           <button is="emby-button" id="danmakuToggleTitle" class="paper-icon-button-light"
             title="使用日语标题搜索" style="color: #fff; padding: 0 1em; background: rgba(255, 255, 255, 0.1);">
-            <span class="md-icon">${translate_icon}</span>
+            <span class="md-icon">${CONFIG.ui.icons.translate}</span>
           </button>
         </div>
         <button is="emby-button" id="closeSearchDialog" class="paper-icon-button-light"
@@ -1192,9 +1285,9 @@
           const _name_key = '_anime_name_rel_' + _id;
           const _episode_key = '_episode_id_rel_' + _id + '_' + episode;
 
-          window.localStorage.setItem(_id_key, selectedAnime.animeId);
-          window.localStorage.setItem(_name_key, selectedAnime.animeTitle);
-          window.localStorage.setItem(_episode_key, JSON.stringify(episodeInfo));
+          StorageManager.set(_id_key, selectedAnime.animeId);
+          StorageManager.set(_name_key, selectedAnime.animeTitle);
+          StorageManager.set(_episode_key, episodeInfo);
         }
 
         window.ede.episode_info = episodeInfo;
@@ -1274,22 +1367,20 @@
     animeImg.src = `https://img.dandanplay.net/anime/${animeId}.jpg`;
   }
 
-  // 在全局常量区域添加这个样式常量
-  const videoOsdDanmakuInfoStyle = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
-
   // 修改弹幕信息显示函数
   function appendvideoOsdDanmakuInfo(loadSum) {
     const episode_info = window.ede.episode_info || {};
     const { episodeId, animeTitle, episodeTitle } = episode_info;
-    const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
-    let videoOsdDanmakuTitle = document.getElementById('videoOsdDanmakuTitle');
+    const videoOsdContainer = DOMCache.get(`${CONFIG.selectors.mediaContainer} .videoOsdSecondaryText`);
+    let videoOsdDanmakuTitle = DOMCache.get('#videoOsdDanmakuTitle');
 
     if (!videoOsdDanmakuTitle) {
       videoOsdDanmakuTitle = document.createElement('h3');
       videoOsdDanmakuTitle.id = 'videoOsdDanmakuTitle';
       videoOsdDanmakuTitle.classList.add('videoOsdTitle');
-      videoOsdDanmakuTitle.style = videoOsdDanmakuInfoStyle;
+      videoOsdDanmakuTitle.style = CONFIG.styles.danmakuInfo;
       videoOsdDanmakuTitle.style.display = window.ede.showDanmakuInfo ? 'block' : 'none';
+      DOMCache.cache.set('#videoOsdDanmakuTitle:document', videoOsdDanmakuTitle);
     }
 
     let text = '弹幕：';
@@ -1332,8 +1423,7 @@
     document.body.appendChild(dialog);
 
     // 获取已保存的过滤类型
-    const selectedTypes = window.localStorage.getItem('danmakuTypeFilter') ?
-        JSON.parse(window.localStorage.getItem('danmakuTypeFilter')) : [];
+    const selectedTypes = StorageManager.get('danmakuTypeFilter', []);
 
     // 添加过滤选项
     const container = dialog.querySelector('#filterTypeContainer');
@@ -1350,8 +1440,7 @@
         checkbox.querySelector('input').addEventListener('change', (e) => {
             const checked = e.target.checked;
             const value = e.target.value;
-            let types = window.localStorage.getItem('danmakuTypeFilter') ?
-                JSON.parse(window.localStorage.getItem('danmakuTypeFilter')) : [];
+            let types = StorageManager.get('danmakuTypeFilter', []);
 
             if (checked && !types.includes(value)) {
                 types.push(value);
@@ -1359,7 +1448,7 @@
                 types = types.filter(t => t !== value);
             }
 
-            window.localStorage.setItem('danmakuTypeFilter', JSON.stringify(types));
+            StorageManager.set('danmakuTypeFilter', types);
             reloadDanmaku('reload');
         });
 
@@ -1514,9 +1603,9 @@
                 window.ede.customProxyServer = '';
                 customProxyInput.value = '';
                 customProxyInput.style.opacity = '0.5';
-                window.localStorage.removeItem('danmakuCustomProxy');
+                StorageManager.remove('danmakuCustomProxy');
                 window.ede.currentProxyIndex = 0;
-                window.localStorage.setItem('danmakuProxyIndex', 0);
+                StorageManager.set('danmakuProxyIndex', 0);
                 showTooltip('已切换至默认代理服务器');
             } else {
                 customProxyInput.style.opacity = '1';
@@ -1532,7 +1621,7 @@
             const value = customProxyInput.value.trim();
             if (value && value !== window.ede.customProxyServer) {
                 window.ede.customProxyServer = value;
-                window.localStorage.setItem('danmakuCustomProxy', value);
+                StorageManager.set('danmakuCustomProxy', value);
                 showTooltip('已更新自定义代理服务器');
             }
         }, 1000);
@@ -1627,7 +1716,7 @@
     cacheEnabledCheckbox.checked = window.ede.cacheEnabled;
     cacheEnabledCheckbox.addEventListener('change', () => {
       window.ede.cacheEnabled = cacheEnabledCheckbox.checked;
-      window.localStorage.setItem('cacheEnabled', cacheEnabledCheckbox.checked);
+      StorageManager.set('cacheEnabled', cacheEnabledCheckbox.checked);
     });
 
     const style = document.createElement('style');
@@ -1677,7 +1766,7 @@ function generateLogContent() {
 简繁转换: ${window.ede?.chConvert}
 加载状态: ${window.ede?.loading}
 当前播放信息: ${JSON.stringify(window.ede?.episode_info, null, 2)}
-字体大小: ${isMobile ? fontSizeMobile : fontSizeDesktop}px
+字体大小: ${isMobile ? CONFIG.ui.fontSize.mobile : CONFIG.ui.fontSize.desktop}px
 当前代理: ${proxyServer}
 最后错误: ${window.ede?.lastError || '无'}
 CORS状态: ${window.ede?.corsStatus || '未测试'}
@@ -1700,7 +1789,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
           <div>
             <button is="emby-button" id="resetSettingsDialog" class="paper-icon-button-light"
               title="还原默认值" style="margin-right: 0.5em;">
-              <span class="md-icon">${reset_icon}</span>
+              <span class="md-icon">${CONFIG.ui.icons.reset}</span>
             </button>
             <button is="emby-button" id="closeSettingsDialog" class="paper-icon-button-light" title="关闭">
               <span class="md-icon">close</span>
@@ -1716,7 +1805,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
             <div class="sliderContainer">
               <input type="range" is="emby-slider" id="fontSizeSlider"
                 min="12" max="48" step="1"
-                value="${window.localStorage.getItem('danmakuFontSize') || (isMobile ? fontSizeMobile : fontSizeDesktop)}"
+                value="${StorageManager.get('danmakuFontSize', isMobile ? CONFIG.ui.fontSize.mobile : CONFIG.ui.fontSize.desktop)}"
                 class="emby-slider">
             </div>
           </div>
@@ -1728,7 +1817,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
             <div class="sliderContainer">
               <input type="range" is="emby-slider" id="transparencySlider"
                 min="0" max="100" step="1"
-                value="${window.localStorage.getItem('danmakuTransparencyLevel') || '100'}"
+                value="${StorageManager.get('danmakuTransparencyLevel', '100')}"
                 class="emby-slider">
             </div>
           </div>
@@ -1767,14 +1856,14 @@ API响应: ${window.ede?.lastApiResponse || '无'}
     // 更新显示值和应用设置
     function updateTransparency(value) {
       transparencyValue.textContent = value + '%';
-      window.localStorage.setItem('danmakuTransparencyLevel', value);
+      StorageManager.set('danmakuTransparencyLevel', value);
       globalOpacity = value / 100;
       updateSliderStyle(transparencySlider);
     }
 
     function updateFontSize(value) {
       fontSizeValue.textContent = value + 'px';
-      window.localStorage.setItem('danmakuFontSize', value);
+      StorageManager.set('danmakuFontSize', value);
       updateSliderStyle(fontSizeSlider);
       if (window.ede.danmaku) {
         reloadDanmaku('reload');
@@ -1784,12 +1873,12 @@ API响应: ${window.ede?.lastApiResponse || '无'}
     // 等待 DOM 完全渲染后初始化滑块位置
     requestAnimationFrame(() => {
       // 初始化透明度滑块
-      const savedTransparency = window.localStorage.getItem('danmakuTransparencyLevel') || '100';
+      const savedTransparency = StorageManager.get('danmakuTransparencyLevel', '100');
       transparencySlider.value = savedTransparency;
       updateTransparency(savedTransparency);
 
       // 初始化字体大小滑块
-      const savedFontSize = window.localStorage.getItem('danmakuFontSize') || (isMobile ? fontSizeMobile : fontSizeDesktop);
+      const savedFontSize = StorageManager.get('danmakuFontSize', isMobile ? CONFIG.ui.fontSize.mobile : CONFIG.ui.fontSize.desktop);
       fontSizeSlider.value = savedFontSize;
       updateFontSize(savedFontSize);
     });
@@ -1800,7 +1889,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
 
     // 还原默认值
     dialog.querySelector('#resetSettingsDialog').onclick = () => {
-      const defaultFontSize = isMobile ? fontSizeMobile : fontSizeDesktop;
+      const defaultFontSize = isMobile ? CONFIG.ui.fontSize.mobile : CONFIG.ui.fontSize.desktop;
       fontSizeSlider.value = defaultFontSize;
       transparencySlider.value = 100;
       updateFontSize(defaultFontSize);
@@ -1815,7 +1904,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
   const filterSettingsButtonOpts = {
     title: '过滤设置',
     id: 'filterSettings',
-    innerText: filter_icons[0],
+    innerText: CONFIG.ui.icons.filter[0],
     onclick: () => {
       showFilterSettingsDialog();
     },
@@ -1867,7 +1956,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
             <div class="sliderContainer">
               <input type="range" is="emby-slider" id="filterLevelSlider"
                 min="0" max="4" step="1"
-                value="${window.localStorage.getItem('danmakuFilterLevel') || '0'}"
+                value="${StorageManager.get('danmakuFilterLevel', '0')}"
                 class="emby-slider">
             </div>
           </div>
@@ -1951,7 +2040,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
     document.head.appendChild(style);
 
     // 初始化简繁转换
-    const currentChConvert = window.localStorage.getItem('chConvert') || '1';
+    const currentChConvert = StorageManager.get('chConvert', '1');
     dialog.querySelector(`input[name="chConvert"][value="${currentChConvert}"]`).checked = true;
 
     // 初始化过滤等级
@@ -1964,7 +2053,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
       const intValue = parseInt(value);
       filterLevelValue.textContent = filterLevels[intValue];
       filterLevelValue.style.color = filterColors[intValue];
-      window.localStorage.setItem('danmakuFilterLevel', value);
+      StorageManager.set('danmakuFilterLevel', value);
 
       const percentage = (intValue / 4) * 100;
       filterLevelSlider.style.background = `linear-gradient(to right,
@@ -1982,7 +2071,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
 
     // 等待 DOM 完全渲染后初始化滑块位置
     requestAnimationFrame(() => {
-      const savedFilterLevel = window.localStorage.getItem('danmakuFilterLevel') || '0';
+      const savedFilterLevel = StorageManager.get('danmakuFilterLevel', '0');
       filterLevelSlider.value = savedFilterLevel;
       updateFilterLevel(savedFilterLevel);
     });
@@ -1995,8 +2084,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
 
     // 初始化高级过滤选项
     const advancedFilterContainer = dialog.querySelector('#advancedFilterContainer');
-    const selectedTypes = window.localStorage.getItem('danmakuTypeFilter') ?
-      JSON.parse(window.localStorage.getItem('danmakuTypeFilter')) : [];
+    const selectedTypes = StorageManager.get('danmakuTypeFilter', []);
 
     Object.values(danmakuTypeFilterOpts).forEach(opt => {
       const checkbox = document.createElement('label');
@@ -2011,8 +2099,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
       checkbox.querySelector('input').addEventListener('change', (e) => {
         const checked = e.target.checked;
         const value = e.target.value;
-        let types = window.localStorage.getItem('danmakuTypeFilter') ?
-          JSON.parse(window.localStorage.getItem('danmakuTypeFilter')) : [];
+        let types = StorageManager.get('danmakuTypeFilter', []);
 
         if (checked && !types.includes(value)) {
           types.push(value);
@@ -2020,7 +2107,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
           types = types.filter(t => t !== value);
         }
 
-        window.localStorage.setItem('danmakuTypeFilter', JSON.stringify(types));
+        StorageManager.set('danmakuTypeFilter', types);
         reloadDanmaku('reload');
       });
 
@@ -2032,7 +2119,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
       radio.addEventListener('change', (e) => {
         if (e.target.checked) {
           window.ede.chConvert = parseInt(e.target.value);
-          window.localStorage.setItem('chConvert', e.target.value);
+          StorageManager.set('chConvert', e.target.value);
           reloadDanmaku('reload');
         }
       });
@@ -2063,8 +2150,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
         `;
         wordChip.querySelector('.removeWord').onclick = () => {
           window.ede.filterWords = window.ede.filterWords.filter(w => w !== word);
-          window.localStorage.setItem('danmakuFilterWords',
-            JSON.stringify(window.ede.filterWords));
+          StorageManager.set('danmakuFilterWords', window.ede.filterWords);
           updateFilterWordList();
           reloadDanmaku('reload');
         };
@@ -2076,8 +2162,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
       const word = filterWordInput.value.trim();
       if (word && !window.ede.filterWords.includes(word)) {
         window.ede.filterWords.push(word);
-        window.localStorage.setItem('danmakuFilterWords',
-          JSON.stringify(window.ede.filterWords));
+        StorageManager.set('danmakuFilterWords', window.ede.filterWords);
         filterWordInput.value = '';
         updateFilterWordList();
         reloadDanmaku('reload');
@@ -2090,22 +2175,44 @@ API响应: ${window.ede?.lastApiResponse || '无'}
     dialog.showModal();
   }
 
+  // Create optimized interval management
+  const IntervalManager = {
+    intervals: new Map(),
+    
+    setInterval(name, callback, delay) {
+      this.clearInterval(name);
+      const id = setInterval(callback, delay);
+      this.intervals.set(name, id);
+      return id;
+    },
+    
+    clearInterval(name) {
+      if (this.intervals.has(name)) {
+        clearInterval(this.intervals.get(name));
+        this.intervals.delete(name);
+      }
+    },
+    
+    clearAll() {
+      for (const [name, id] of this.intervals) {
+        clearInterval(id);
+      }
+      this.intervals.clear();
+    }
+  };
+
   while (!window.require) {
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, CONFIG.intervals.check));
   }
   if (!window.ede) {
     window.ede = new EDE();
 
-    setInterval(() => {
-      initUI();
-    }, check_interval);
+    // Use optimized interval management
+    IntervalManager.setInterval('ui-check', initUI, CONFIG.intervals.check);
+    IntervalManager.setInterval('listener-check', initListener, CONFIG.intervals.check);
 
     // 直接初始化弹幕,不等待
     reloadDanmaku('init');
-
-    setInterval(() => {
-      initListener();
-    }, check_interval);
   }
 
   // 将函数定义移动到这里, IIFE内部
@@ -2123,11 +2230,11 @@ API响应: ${window.ede?.lastApiResponse || '无'}
     // 添加还原按钮
     const resetButton = document.createElement('button');
     resetButton.className = 'reset-order-button paper-icon-button-light';
-    resetButton.innerHTML = `<span class="md-icon">${reset_icon}</span> <span>还原默认顺序</span>`;
+    resetButton.innerHTML = `<span class="md-icon">${CONFIG.ui.icons.reset}</span> <span>还原默认顺序</span>`;
     resetButton.onclick = async () => {
       const defaultOrder = ['displayDanmaku', 'danmakuSettings', 'filterSettings', 'switchDanmakuInfo', 'searchDanmaku', 'showDanmakuLog'];
       window.ede.buttonOrder = defaultOrder;
-      window.localStorage.setItem('danmakuButtonOrder', JSON.stringify(defaultOrder));
+      StorageManager.set('danmakuButtonOrder', defaultOrder);
       updateButtonOrderList(container);
       
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -2195,7 +2302,7 @@ API响应: ${window.ede?.lastApiResponse || '无'}
         newOrder.splice(toIndex, 0, movedItem);
 
         window.ede.buttonOrder = newOrder;
-        window.localStorage.setItem('danmakuButtonOrder', JSON.stringify(newOrder));
+        StorageManager.set('danmakuButtonOrder', newOrder);
 
         updateButtonOrderList(container);
         
