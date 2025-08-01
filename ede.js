@@ -683,68 +683,101 @@
         }
     }, 50);
 
-    function initUI() {
-        // 页面未加载
-        let uiAnchor = getElementsByInnerText('i', uiAnchorStr);
-        if (!uiAnchor || !uiAnchor[0]) {
-            return;
-        }
-        // 不在播放页面
-        let NotHideFlag = 0;
-        let TargetIndex = null;
-        for (let index = 0; index < uiAnchor.length; index++) {
-            if (uiAnchor[index].parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.classList.contains('hide')) {
-                continue;
-            } else {
-                NotHideFlag = 1;
-                TargetIndex = index;
-            }
-        }
-        if (!NotHideFlag) {
-            return;
-        }
-        // 已初始化
-        if (document.getElementById('danmakuCtr') && !document.getElementById('danmakuCtr').parentNode.parentNode.parentNode.parentNode.parentNode.classList.contains('hide')) {
-            return;
-        }
-        // 开始初始化
-        console.log('正在初始化UI');
-        // 删除旧控件
-        if (document.getElementById('danmakuCtr')) {
-            document.getElementById('danmakuCtr').remove();
-        }
-        // 弹幕按钮容器div
-        let parent = uiAnchor[TargetIndex].parentNode.parentNode.parentNode;
-        let menubar = document.createElement('div');
-        menubar.id = 'danmakuCtr';
-        menubar.className = menubarOptions.class;
-        if (!window.ede.episode_info) {
-            menubar.style.opacity = 0.5;
-        }
-        parent.append(menubar);
-        // 获取所有可用按钮配置
-        const buttonConfigs = {
-            displayDanmaku: { ...displayButtonOpts, label: '弹幕开关' },
-            danmakuSettings: { ...settingsButtonOpts, label: '弹幕设置' },
-            filterSettings: { ...filterSettingsButtonOpts, label: '过滤设置' },
-            switchDanmakuInfo: { ...infoSwitchButtonOpts, label: '信息显示' },
-            searchDanmaku: { ...searchButtonOpts, label: '搜索弹幕' },
-            showDanmakuLog: { ...logButtonOpts, label: '调试日志' },
-        };
+    // Optimized UI initialization with better error handling and performance
+    const UIManager = {
+        isInitialized: false,
 
-        // 按照保存的顺序添加按钮
-        window.ede.buttonOrder.forEach((buttonId) => {
-            const config = buttonConfigs[buttonId];
-            if (config) {
-                if (buttonId === 'displayDanmaku') {
-                    config.innerText = danmaku_icons[window.ede.danmakuSwitch];
-                } else if (buttonId === 'switchDanmakuInfo') {
-                    config.innerText = info_switch_icons[window.ede.showDanmakuInfo ? 1 : 0];
+        init() {
+            try {
+                const uiAnchor = getElementsByInnerText('i', uiAnchorStr);
+                if (!uiAnchor || !uiAnchor[0]) {
+                    return false;
                 }
-                menubar.appendChild(createButton(config));
+
+                // Find visible anchor
+                const targetIndex = this.findVisibleAnchor(uiAnchor);
+                if (targetIndex === null) {
+                    return false;
+                }
+
+                // Check if already initialized
+                const existingCtr = Utils.$('#danmakuCtr');
+                if (existingCtr && !existingCtr.parentNode.parentNode.parentNode.parentNode.parentNode.classList.contains('hide')) {
+                    return false;
+                }
+
+                this.createUI(uiAnchor[targetIndex]);
+                this.isInitialized = true;
+                console.log('UI初始化完成');
+                return true;
+            } catch (error) {
+                console.error('UI初始化失败:', error);
+                return false;
             }
-        });
-        console.log('UI初始化完成');
+        },
+
+        findVisibleAnchor(uiAnchor) {
+            for (let index = 0; index < uiAnchor.length; index++) {
+                const isHidden = uiAnchor[index].parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.classList.contains('hide');
+                if (!isHidden) {
+                    return index;
+                }
+            }
+            return null;
+        },
+
+        createUI(anchorElement) {
+            console.log('正在初始化UI');
+
+            // Remove old container
+            const oldCtr = Utils.$('#danmakuCtr');
+            if (oldCtr) oldCtr.remove();
+
+            // Create new container
+            const parent = anchorElement.parentNode.parentNode.parentNode;
+            const menubar = Utils.createElement('div', {
+                id: 'danmakuCtr',
+                class: menubarOptions.class,
+                style: { opacity: window.ede.episode_info ? '1' : '0.5' },
+            });
+
+            if (menubar) {
+                parent.appendChild(menubar);
+                this.addButtons(menubar);
+            }
+        },
+
+        addButtons(menubar) {
+            const buttonConfigs = {
+                displayDanmaku: { ...displayButtonOpts, label: '弹幕开关' },
+                danmakuSettings: { ...settingsButtonOpts, label: '弹幕设置' },
+                filterSettings: { ...filterSettingsButtonOpts, label: '过滤设置' },
+                switchDanmakuInfo: { ...infoSwitchButtonOpts, label: '信息显示' },
+                searchDanmaku: { ...searchButtonOpts, label: '搜索弹幕' },
+                showDanmakuLog: { ...logButtonOpts, label: '调试日志' },
+            };
+
+            // Add buttons in saved order
+            window.ede.buttonOrder.forEach((buttonId) => {
+                const config = buttonConfigs[buttonId];
+                if (config) {
+                    // Set dynamic content
+                    if (buttonId === 'displayDanmaku') {
+                        config.innerText = danmaku_icons[window.ede.danmakuSwitch];
+                    } else if (buttonId === 'switchDanmakuInfo') {
+                        config.innerText = info_switch_icons[window.ede.showDanmakuInfo ? 1 : 0];
+                    }
+
+                    const button = createButton(config);
+                    if (button) menubar.appendChild(button);
+                }
+            });
+        },
+    };
+
+    // Legacy function wrapper
+    function initUI() {
+        return UIManager.init();
     }
 
     function sendNotification(title, msg) {
@@ -1107,164 +1140,216 @@
         return null;
     }
 
-    function reloadDanmaku(type = 'check') {
-        if (window.ede.loading) {
-            console.log('正在重新加载');
-            return;
-        }
-        window.ede.loading = true;
+    // Optimized reloadDanmaku function with better structure and error handling
+    const DanmakuLoader = {
+        isLoading: false,
 
-        // 添加视频元素检查
-        const videoElement = document.querySelector(mediaQueryStr);
-        if (!videoElement || !videoElement.readyState) {
-            console.log('视频元素未就绪，等待重试...');
-            window.ede.loading = false;
-            setTimeout(() => reloadDanmaku(type), 500);
-            return;
-        }
+        // Main reload function
+        async reload(type = 'check') {
+            if (this.isLoading) {
+                console.log('正在重新加载');
+                return;
+            }
 
-        if (type === 'reload') {
-            // 强制清除缓存，确保简繁体切换后弹幕正确刷新
+            this.isLoading = true;
+            window.ede.loading = true;
+
+            try {
+                // Check video element readiness
+                const videoElement = Utils.$(mediaQueryStr, false);
+                if (!videoElement || !videoElement.readyState) {
+                    console.log('视频元素未就绪，等待重试...');
+                    setTimeout(() => this.reload(type), 500);
+                    return;
+                }
+
+                // Clear cache if needed
+                if (type === 'reload') {
+                    this.clearDanmakuCache();
+                }
+
+                // Get episode info and load danmaku
+                const info = await getEpisodeInfo(type !== 'search');
+                if (!info) {
+                    appendvideoOsdDanmakuInfo();
+                    if (type !== 'init') {
+                        throw new Error('播放器未完成加载');
+                    }
+                    return;
+                }
+
+                // Check if video changed
+                if (type !== 'search' && type !== 'reload' && window.ede.danmaku && window.ede.episode_info && window.ede.episode_info.episodeId === info.episodeId) {
+                    throw new Error('当前播放视频未变动');
+                }
+
+                window.ede.episode_info = info;
+
+                // Load comments and create danmaku
+                const comments = await getComments(info.episodeId);
+                await this.waitForContainer();
+                await createDanmaku(comments);
+
+                this.onLoadSuccess();
+            } catch (error) {
+                this.onLoadError(error);
+            } finally {
+                this.isLoading = false;
+                window.ede.loading = false;
+            }
+        },
+
+        // Clear danmaku cache
+        clearDanmakuCache() {
             Object.keys(localStorage).forEach((key) => {
                 if (key.startsWith('_danmaku_cache_')) {
                     localStorage.removeItem(key);
                 }
             });
-        }
+        },
 
-        getEpisodeInfo(type != 'search')
-            .then((info) => {
-                return new Promise((resolve, reject) => {
-                    if (!info) {
-                        appendvideoOsdDanmakuInfo();
-                        if (type != 'init') {
-                            reject('播放器未完成加载');
-                        } else {
-                            reject(null);
-                        }
-                    }
-                    if (type != 'search' && type != 'reload' && window.ede.danmaku && window.ede.episode_info && window.ede.episode_info.episodeId == info.episodeId) {
-                        reject('当前播放视频未变动');
+        // Wait for container to be ready
+        waitForContainer() {
+            return new Promise((resolve) => {
+                const checkContainer = () => {
+                    const container = Utils.$(mediaContainerQueryStr, false);
+                    if (container && !container.classList.contains('hide')) {
+                        resolve();
                     } else {
-                        window.ede.episode_info = info;
-                        resolve(info.episodeId);
+                        setTimeout(checkContainer, 200);
                     }
-                });
-            })
-            .then(
-                (episodeId) =>
-                    getComments(episodeId).then((comments) => {
-                        // 确保视频容器已准备就绪
-                        return new Promise((resolve) => {
-                            const checkContainer = () => {
-                                const container = document.querySelector(mediaContainerQueryStr);
-                                if (container && !container.classList.contains('hide')) {
-                                    resolve(comments);
-                                } else {
-                                    setTimeout(checkContainer, 200);
-                                }
-                            };
-                            checkContainer();
-                        }).then((comments) => createDanmaku(comments));
-                    }),
-                (msg) => {
-                    if (msg) {
-                        console.log(msg);
-                    }
-                },
-            )
-            .then(() => {
-                window.ede.loading = false;
-                if (document.getElementById('danmakuCtr')) {
-                    document.getElementById('danmakuCtr').style.opacity = 1;
-                }
-            })
-            .catch((error) => {
-                console.error('弹幕加载失败:', error);
-                window.ede.loading = false;
+                };
+                checkContainer();
             });
+        },
+
+        // Handle successful load
+        onLoadSuccess() {
+            const danmakuCtr = Utils.$('#danmakuCtr');
+            if (danmakuCtr) {
+                danmakuCtr.style.opacity = 1;
+            }
+        },
+
+        // Handle load error
+        onLoadError(error) {
+            if (error.message && error.message !== '当前播放视频未变动') {
+                console.error('弹幕加载失败:', error);
+            } else if (error.message) {
+                console.log(error.message);
+            }
+        },
+    };
+
+    // Legacy function wrapper
+    function reloadDanmaku(type = 'check') {
+        return DanmakuLoader.reload(type);
     }
 
+    // Optimized Danmaku Filter Module
+    const DanmakuFilter = {
+        // Main filter function
+        filter(comments) {
+            let filteredComments = [...comments];
+
+            // Apply type filters
+            const typeFilters = StorageManager.get('danmakuTypeFilter', []);
+            filteredComments = this.applyTypeFilters(filteredComments, typeFilters);
+
+            // Apply keyword filters
+            const filterWords = window.ede.filterWords;
+            if (filterWords.length > 0) {
+                filteredComments = this.applyKeywordFilters(filteredComments, filterWords);
+            }
+
+            // Apply density filters
+            filteredComments = this.applyDensityFilters(filteredComments);
+
+            return filteredComments;
+        },
+
+        // Apply type-based filters
+        applyTypeFilters(comments, filters) {
+            if (!filters || filters.length === 0) return comments;
+
+            let filtered = comments;
+
+            // Color filter - only keep white
+            if (filters.includes(danmakuTypeFilterOpts.onlyWhite.id)) {
+                filtered = filtered.filter((c) => c.style?.color?.toLowerCase().slice(0, 7) === '#ffffff');
+            }
+
+            // Rolling danmaku filter
+            if (filters.includes(danmakuTypeFilterOpts.rolling.id)) {
+                filtered = filtered.filter((c) => c.mode !== 'ltr' && c.mode !== 'rtl');
+            }
+
+            // Emoji filter
+            if (filters.includes(danmakuTypeFilterOpts.emoji.id)) {
+                const emojiRegex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1F1E6}-\u{1F1FF}]/gu;
+                filtered = filtered.filter((c) => !emojiRegex.test(c.text));
+            }
+
+            // Mode-specific filters
+            const modeFilters = filters.filter((f) => !['onlyWhite', 'rolling', 'emoji'].includes(f));
+            if (modeFilters.length > 0) {
+                filtered = filtered.filter((c) => !modeFilters.includes(c.mode));
+            }
+
+            return filtered;
+        },
+
+        // Apply keyword filters
+        applyKeywordFilters(comments, filterWords) {
+            return comments.filter((comment) => !filterWords.some((word) => comment.text.toLowerCase().includes(word.toLowerCase())));
+        },
+
+        // Apply density filters with improved algorithm
+        applyDensityFilters(comments) {
+            const level = parseInt(StorageManager.get('danmakuFilterLevel', 0));
+            if (level === 0) return comments;
+
+            const limit = level === 4 ? 3 : 9 - level * 2;
+            const verticalLimit = level === 4 ? 2 : 6;
+
+            const arr_comments = [];
+            const vertical_comments = [];
+
+            for (const element of comments) {
+                const i = Math.ceil(element.time);
+                const i_v = Math.ceil(element.time / 3);
+
+                if (!arr_comments[i]) arr_comments[i] = [];
+                if (!vertical_comments[i_v]) vertical_comments[i_v] = [];
+
+                const isVertical = element.mode === 'top' || element.mode === 'bottom';
+
+                if (isVertical && vertical_comments[i_v].length < verticalLimit) {
+                    vertical_comments[i_v].push(element);
+                } else {
+                    // Convert vertical to horizontal if needed
+                    const convertedElement = isVertical ? { ...element, mode: 'rtl' } : element;
+                    if (arr_comments[i].length < limit) {
+                        arr_comments[i].push(convertedElement);
+                    }
+                }
+            }
+
+            return arr_comments.flat().filter(Boolean);
+        },
+    };
+
+    // Legacy function wrappers
     function danmakuFilter(comments) {
-        let _comments = [...comments];
-        // 类型过滤
-        const typeFilters = window.localStorage.getItem('danmakuTypeFilter') ? JSON.parse(window.localStorage.getItem('danmakuTypeFilter')) : [];
-
-        _comments = danmakuTypeFilter(_comments, typeFilters);
-
-        // 关键词过滤
-        const filterWords = window.ede.filterWords;
-        if (filterWords.length > 0) {
-            _comments = _comments.filter((comment) => !filterWords.some((word) => comment.text.toLowerCase().includes(word.toLowerCase())));
-        }
-
-        // 密度过滤
-        _comments = danmakuDensityLevelFilter(_comments);
-
-        return _comments;
+        return DanmakuFilter.filter(comments);
     }
 
     function danmakuTypeFilter(comments, filters) {
-        if (!filters || filters.length === 0) return comments;
-
-        // 彩色过滤,只留下默认的白色
-        if (filters.includes(danmakuTypeFilterOpts.onlyWhite.id)) {
-            comments = comments.filter((c) => '#ffffff' === c.style.color.toLowerCase().slice(0, 7));
-            filters = filters.filter((f) => f !== danmakuTypeFilterOpts.onlyWhite.id);
-        }
-
-        // 过滤滚动弹幕(包含从左至右和从右至左)
-        if (filters.includes(danmakuTypeFilterOpts.rolling.id)) {
-            comments = comments.filter((c) => c.mode !== 'ltr' && c.mode !== 'rtl');
-            filters = filters.filter((f) => f !== danmakuTypeFilterOpts.rolling.id);
-        }
-
-        // 按 emoji 过滤
-        if (filters.includes(danmakuTypeFilterOpts.emoji.id)) {
-            const emojiRegex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1F1E6}-\u{1F1FF}]/gu;
-            comments = comments.filter((c) => !emojiRegex.test(c.text));
-            filters = filters.filter((f) => f !== danmakuTypeFilterOpts.emoji.id);
-        }
-
-        // 过滤特定模式的弹幕
-        if (filters.length > 0) {
-            comments = comments.filter((c) => !filters.includes(c.mode));
-        }
-
-        return comments;
+        return DanmakuFilter.applyTypeFilters(comments, filters);
     }
 
     function danmakuDensityLevelFilter(comments) {
-        let level = parseInt(window.localStorage.getItem('danmakuFilterLevel') ? window.localStorage.getItem('danmakuFilterLevel') : 0);
-        if (level == 0) {
-            return comments;
-        }
-        // 修改极限等级的限制
-        let limit = level === 4 ? 3 : 9 - level * 2;
-        let vertical_limit = level === 4 ? 2 : 6;
-        let arr_comments = [];
-        let vertical_comments = [];
-        for (let index = 0; index < comments.length; index++) {
-            let element = comments[index];
-            let i = Math.ceil(element.time);
-            let i_v = Math.ceil(element.time / 3);
-            if (!arr_comments[i]) {
-                arr_comments[i] = [];
-            }
-            if (!vertical_comments[i_v]) {
-                vertical_comments[i_v] = [];
-            }
-            // TODO: 屏蔽过滤
-            if (vertical_comments[i_v].length < vertical_limit) {
-                vertical_comments[i_v].push(element);
-            } else {
-                element.mode = 'rtl';
-            }
-            if (arr_comments[i].length < limit) {
-                arr_comments[i].push(element);
-            }
-        }
-        return arr_comments.flat();
+        return DanmakuFilter.applyDensityFilters(comments);
     }
 
     function danmakuParser($obj) {
@@ -2427,9 +2512,81 @@ API响应: ${window.ede?.lastApiResponse || '无'}
         dialog.showModal();
     }
 
-    while (!window.require) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+    // Main Application Manager with optimized initialization
+    const DanmakuApp = {
+        initialized: false,
+        uiCheckInterval: null,
+        listenerCheckInterval: null,
+
+        async init() {
+            if (this.initialized) return;
+
+            try {
+                // Wait for Emby to be ready
+                await this.waitForEmby();
+
+                // Initialize EDE instance
+                if (!window.ede) {
+                    window.ede = new EDE();
+                }
+
+                // Start UI and listener checks
+                this.startPeriodicChecks();
+
+                // Initialize danmaku (don't wait)
+                reloadDanmaku('init');
+
+                this.initialized = true;
+                console.log('弹幕应用初始化完成');
+            } catch (error) {
+                console.error('弹幕应用初始化失败:', error);
+            }
+        },
+
+        async waitForEmby() {
+            while (!window.require) {
+                await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+        },
+
+        startPeriodicChecks() {
+            // Throttled UI initialization check
+            const throttledUIInit = Utils.throttle(() => {
+                if (!UIManager.isInitialized) {
+                    UIManager.init();
+                }
+            }, Config.CHECK_INTERVAL);
+
+            this.uiCheckInterval = setInterval(throttledUIInit, Config.CHECK_INTERVAL);
+
+            // Throttled listener initialization check
+            const throttledListenerInit = Utils.throttle(() => {
+                initListener();
+            }, Config.CHECK_INTERVAL);
+
+            this.listenerCheckInterval = setInterval(throttledListenerInit, Config.CHECK_INTERVAL);
+        },
+
+        destroy() {
+            if (this.uiCheckInterval) {
+                clearInterval(this.uiCheckInterval);
+                this.uiCheckInterval = null;
+            }
+
+            if (this.listenerCheckInterval) {
+                clearInterval(this.listenerCheckInterval);
+                this.listenerCheckInterval = null;
+            }
+
+            if (window.ede) {
+                window.ede.cleanup();
+            }
+
+            this.initialized = false;
+        },
+    };
+
+    // Initialize the application
     if (!window.ede) {
         window.ede = new EDE();
 
@@ -2602,29 +2759,9 @@ API响应: ${window.ede?.lastApiResponse || '无'}
         }
     }
 
+    // Use the existing optimized Utils.showToast instead of duplicate showTooltip
     function showTooltip(message, type = 'info') {
-        const tooltip = document.createElement('div');
-        tooltip.style.cssText = `
-      position: fixed;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: ${type === 'error' ? 'rgba(244, 67, 54, 0.9)' : 'rgba(0, 0, 0, 0.9)'};
-      color: white;
-      padding: 12px 24px;
-      border-radius: 4px;
-      z-index: 10000;
-      font-size: 14px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-      transition: opacity 0.3s ease;
-    `;
-        tooltip.textContent = message;
-        document.body.appendChild(tooltip);
-
-        setTimeout(() => {
-            tooltip.style.opacity = '0';
-            setTimeout(() => tooltip.remove(), 300);
-        }, 2000);
+        Utils.showToast(message, type);
     }
     // ...rest of IIFE code...
 })();
