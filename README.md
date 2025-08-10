@@ -28,7 +28,7 @@
 
 > 需要重命名截图时请把下列文件名替换；当前仍指向原 PixPin_* 文件。演示图保持不变。
 
-![外观设置](图片/PixPin_2025-01-27_01-19-09.png)<!-- TODO: rename e.g. 图片/appearance.png -->
+![外观设置](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-08-11_03-40-43.jpg)<!-- 更新：使用 2025-08-11 最新截图 -->
 ![过滤设置](图片/PixPin_2025-01-27_01-19-21.png)<!-- TODO: rename e.g. 图片/filter.png -->
 ![按钮自定义](图片/PixPin_2025-01-27_01-19-32.png)<!-- TODO: rename e.g. 图片/layout.png -->
 ![搜索与匹配](图片/PixPin_2025-01-27_01-19-40.png)<!-- TODO: rename e.g. 图片/search.png -->
