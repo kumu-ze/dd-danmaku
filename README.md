@@ -28,12 +28,9 @@
 
 ## 截图
 
-![截图1](图片/截图1.png)
-![截图2](图片/截图2.png)
-![截图3](图片/截图3.png)
-![截图4](图片/截图4.png)
-
-<!-- 如果还有更多，继续按顺序添加；将截图1.png 等替换为真实文件名 -->
+![截图1](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-08-11_03-51-09.jpg)
+![截图2](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-08-11_03-50-55.jpg)
+![截图3](https://raw.githubusercontent.com/kumu-ze/dd-danmaku/refs/heads/master/%E5%9B%BE%E7%89%87/PixPin_2025-08-11_03-50-46.jpg)
 
 ## 安装方式
 
@@ -134,8 +131,7 @@
 | 项目 | 贡献 | 协议 |
 |------|------|------|
 | 9channel/dd-danmaku | 初始实现思路 | MIT |
-| chen3861229/dd-danmaku | 高级过滤 & UI 改进 | MIT |
-| hiback/emby-danmaku | 透明度控制等代码片段 | MIT |
+| chen3861229/dd-danmaku | 高级过滤  | MIT |
 
 ## 许可
 
