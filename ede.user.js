@@ -3,7 +3,7 @@
 // @namespace    https://github.com/kumu-ze/dd-danmaku
 // @description  Emby 弹幕插件：弹幕获取/过滤/外观/热度图/快捷设置
 // @author       kumuze, RyoLee
-// @version      2.0
+// @version      2.0.1
 // @license      MIT
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
@@ -22,7 +22,7 @@
   const search_icon = '\uE881';
   const translate_icon = '\uE927';
   const filter_icons = ['\uE3E0', '\uE3D0', '\uE3D1', '\uE3D2', '\uE3D2']; // 扩展支持0-4共5级
-  const transparency_icons = ['\uEBDC', '\uEBD9', '\uEBE0', '\uEBE2', '\uEBE2', '\uEBD4', '\uEBD2', '\uE1A4'];
+  // removed unused transparency_icons
   const info_switch_icons = ['\uE8F5', '\uE8F4'];
   const more_filter_icon = '\uE5D3';
   const log_icon = '\uE86D';
@@ -38,7 +38,7 @@
   const sliderContainerOptions = { class: 'slidercontainer flex-grow emby-slider-container' };
   const sliderWrapperOptions = { class: 'videoOsdVolumeSliderWrapper flex-grow' };
   const sliderdivOptions = { class: 'videoOsdVolumeControls flex flex-direction-row align-items-center', style: 'position:relative;' };
-  const sliderLabelOptions = { class: 'sliderLabel', style: 'margin-right: 1em; min-width: 100px;' };
+  // removed unused sliderLabelOptions
 
   //定位标志常量
   const uiAnchorStr = '\uE034';
@@ -47,6 +47,8 @@
 
   //全局透明度/移动端检测flag
   var globalOpacity = 1.0;
+  // 初始化播放进度条不透明度变量（若存在用户自定义）
+  (function(){ const o=localStorage.getItem('edeTimelineOpacity'); if(o){ const val=(o/100).toString(); document.documentElement.style.setProperty('--ede-pbp-unplayed-op', val); } })();
   var isMobile = false;
   const fontSizeDesktop = 25;
   const fontSizeMobile = 15;
@@ -67,7 +69,16 @@
     remove(key){ localStorage.removeItem(key); }
   };
   function debounce(fn, delay=300){ let t; function debounced(...args){ clearTimeout(t); t=setTimeout(()=>fn.apply(this,args), delay);} debounced.cancel=()=>clearTimeout(t); return debounced; }
-  function getActiveVideo(){ const v=document.querySelector(mediaQueryStr); return v && v.readyState ? v : null; }
+  // 统一当前秒级时间函数（便于后续精度/源切换）
+  function nowSec(){ return performance.now()/1000; }
+  // 缓存视频节点，避免频繁 querySelector
+  let _cachedVideo=null;
+  function getActiveVideo(){
+    if(_cachedVideo && document.contains(_cachedVideo) && _cachedVideo.readyState) return _cachedVideo;
+    const v=document.querySelector(mediaQueryStr);
+    if(v && v.readyState){ _cachedVideo=v; }
+    return (v && v.readyState)? v : (_cachedVideo && _cachedVideo.readyState? _cachedVideo : null);
+  }
   function getActiveContainer(){ const list=document.querySelectorAll(mediaContainerQueryStr); for(const c of list){ if(!c.classList.contains('hide')) return c; } return null; }
 
   //各个控件差异化参数常量
@@ -75,7 +86,7 @@
   const searchButtonOpts = { title:'搜索弹幕', id:'searchDanmaku', innerText:search_icon, onclick: () => { if (window.ede.loading) { console.log('正在加载,请稍后再试'); return; } showSearchDialog(); } };
   const translateButtonOpts = { title:null, id:'translateDanmaku', innerText:translate_icon, onclick: () => { if (window.ede.loading) { console.log('正在加载,请稍后再试'); return; } window.ede.chConvert = (parseInt(window.ede.chConvert) + 1) % 3; StorageManager.set('chConvert', window.ede.chConvert); const el=document.querySelector('#translateDanmaku'); if(el) el.setAttribute('title', chConverTtitle[window.ede.chConvert]); reloadDanmaku('reload'); } };
   const filterButtonOpts = { title:'过滤等级(立即生效)', id:'filteringDanmaku', innerText:null, onclick: () => { let level = parseInt(StorageManager.get('danmakuFilterLevel', 0)) || 0; level = (level + 1) % 5; if(level===0){ const last=parseInt(localStorage.getItem('danmakuLastFilterLevel')||'0'); if(last===0) localStorage.setItem('danmakuLastFilterLevel','2'); } else { localStorage.setItem('danmakuLastFilterLevel', level); } StorageManager.set('danmakuFilterLevel', level); const btn=document.querySelector('#filteringDanmaku .md-icon'); if(btn) btn.innerText = filter_icons[level]; reloadDanmaku('reload'); } };
-  const transparencyRangeSliderOpts = { type:'range', step:'1', min:'0', max:'100', value:'100', oninput:function(){ StorageManager.set('danmakuTransparencyLevel', this.value); globalOpacity = this.value/100; } };
+  // removed legacy transparencyRangeSliderOpts (quick panels now manage directly)
   const infoSwitchButtonOpts = { title:'弹幕信息显示', id:'switchDanmakuInfo', innerText:null, onclick:() => { window.ede.showDanmakuInfo = !window.ede.showDanmakuInfo; localStorage.setItem('showDanmakuInfo', window.ede.showDanmakuInfo); const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0]; const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display = window.ede.showDanmakuInfo?'block':'none'; } };
   const danmakuTypeFilterOpts = { bottom:{id:'bottom',name:'底部弹幕'}, top:{id:'top',name:'顶部弹幕'}, rolling:{id:'rolling',name:'滚动弹幕'}, onlyWhite:{id:'onlyWhite',name:'彩色弹幕'}, emoji:{id:'emoji',name:'emoji'} };
   const moreFilterButtonOpts = { title:'过滤(中心)', id:'moreFilteringDanmaku', innerText:more_filter_icon, onclick:()=>showDanmakuCenterDialog('filter') }; // 指向中心
@@ -173,12 +184,7 @@
     }
   }
 
-  function createRangeSlider(opt, button) {
-    let input = document.createElement('input', rangeSliderOptions);
-    input.setAttribute('type', opt.type); input.setAttribute('step', opt.step); input.setAttribute('min', opt.min); input.setAttribute('max', opt.max); input.setAttribute('value', opt.value); input.oninput = opt.oninput;
-    let sliderContainer = document.createElement('div'); sliderContainer.className = sliderContainerOptions.class; sliderContainer.appendChild(input);
-    let SliderWrapper = document.createElement('div'); SliderWrapper.className = sliderWrapperOptions.class; SliderWrapper.appendChild(sliderContainer);
-    let sliderdiv = document.createElement('div'); sliderdiv.className = sliderdivOptions.class; sliderdiv.style = sliderdivOptions.style; sliderdiv.appendChild(button); sliderdiv.appendChild(SliderWrapper); return sliderdiv; }
+  // removed unused createRangeSlider (UI 已重构不再调用)
 
   function createButton(opt) { const button = document.createElement('button', buttonOptions); button.setAttribute('title', opt.title); button.setAttribute('id', opt.id); const icon = document.createElement('span'); icon.className = 'md-icon'; icon.innerText = opt.innerText; button.appendChild(icon); button.onclick = opt.onclick; return button; }
   // 统一对话框样式工具
@@ -257,7 +263,12 @@
   async function createDanmaku(comments){ if(!comments) return; window.ede.originalCount=comments.length; const videoElement=getActiveVideo(); if(!videoElement) return; if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } // 解析并保存
     // 确保过滤资源已编译
     if(!window.ede._filterResourcesReady) compileFilterResources();
-  window.ede.parsedComments = danmakuParser(comments); const filtered = applyAllFilters(window.ede.parsedComments); const container=getActiveContainer(); if(!container) return; globalOpacity = parseInt(localStorage.getItem('danmakuTransparencyLevel')||100)/100; const savedSpeed = parseInt(localStorage.getItem('danmakuSpeed')) || 200; window.ede.danmaku = new Danmaku({ container, media:videoElement, comments:filtered, engine:'canvas', speed: savedSpeed }); window.ede.filteredComments = filtered; appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); if(window.ede.ob) window.ede.ob.disconnect(); window.ede.ob = new ResizeObserver(()=>{ if(window.ede.danmaku){ window.ede.danmaku.resize(); renderDanmakuTimeline(true); } }); window.ede.ob.observe(container); startDynamicDensityMonitor(); buildDanmakuDensityData(); renderDanmakuTimeline(); attachTimelineMediaEvents(); }
+  // 新视频/新弹幕源时重置已观看段状态，避免沿用上一视频的蓝色覆盖
+  window.ede._watchedSegments=[]; window.ede._lastSegmentUpdateTime=0; // 其余相关变量由逻辑按需再建
+  window.ede.parsedComments = danmakuParser(comments); const filtered = applyAllFilters(window.ede.parsedComments); const container=getActiveContainer(); if(!container) return; globalOpacity = parseInt(localStorage.getItem('danmakuTransparencyLevel')||100)/100; const savedSpeed = parseInt(localStorage.getItem('danmakuSpeed')) || 200; window.ede.danmaku = new Danmaku({ container, media:videoElement, comments:filtered, engine:'canvas', speed: savedSpeed }); window.ede.filteredComments = filtered;
+    // 构建秒级索引供动态密度监控使用
+    (function buildSecondIndex(){ try { if(!filtered.length){ window.ede._countsBySecond=null; return; } const dur = Math.max(videoElement.duration||0, filtered[filtered.length-1].time|0)+2; const arr=new Array(Math.ceil(dur)+1).fill(0); for(const c of filtered){ const si = c.time|0; if(si>=0 && si<arr.length) arr[si]++; } window.ede._countsBySecond = arr; } catch(e){ window.ede._countsBySecond=null; } })();
+    appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); if(window.ede.ob) window.ede.ob.disconnect(); window.ede.ob = new ResizeObserver(()=>{ if(window.ede.danmaku){ window.ede.danmaku.resize(); renderDanmakuTimeline(true); } }); window.ede.ob.observe(container); startDynamicDensityMonitor(); buildDanmakuDensityData(); renderDanmakuTimeline(); attachTimelineMediaEvents(); }
 
   // 新核心重载 + 防抖 (阶段1)
   function coreReloadDanmaku(type='check'){
@@ -282,7 +293,52 @@
     return applyAllFilters(comments);
   }
 
-  function applyAllFilters(base){ let list=[...base]; list = applyTypeFilters(list); list = applyKeywordFilters(list); list = applyDensityFilter(list); return list; }
+  // 统一过滤主入口（单次拷贝 + 早期退出）；保持旧子函数以便复用
+  function applyAllFilters(base){
+    if(!base||!base.length) return [];
+    // 预取配置
+    const typeFilters = localStorage.getItem('danmakuTypeFilter') ? JSON.parse(localStorage.getItem('danmakuTypeFilter')):[];
+    const level = parseInt(localStorage.getItem('danmakuFilterLevel')||0);
+    const hasType = typeFilters.length>0;
+    const wordSet = window.ede._filterWordSet;
+    const wordRe = window.ede._filterWordRegex;
+    const filterEmoji = hasType && typeFilters.includes(danmakuTypeFilterOpts.emoji.id);
+    const filterOnlyWhite = hasType && typeFilters.includes(danmakuTypeFilterOpts.onlyWhite.id);
+    const filterRolling = hasType && typeFilters.includes(danmakuTypeFilterOpts.rolling.id);
+    let whitelistModes = null; // modes to KEEP (if specific type filters selected besides special flags)
+    if(hasType){
+      const residual = typeFilters.filter(f=>!['emoji','onlyWhite','rolling'].includes(f));
+      if(residual.length) whitelistModes = new Set(['top','bottom','ltr','rtl'].filter(m=> !residual.includes(m))); // Actually we filter OUT listed basic modes, so compute complement
+    }
+    const emojiRe = filterEmoji ? (window.ede._emojiRegex || (/x^/)) : null;
+    const out=[];
+    // 关键词与类型第一阶段过滤（不含密度）
+  for(const c of base){
+      if(!c) continue;
+      // 类型过滤
+      if(hasType){
+        if(filterOnlyWhite && c.style && c.style.color && !c.style.color.toLowerCase().startsWith('#ffffff')){
+          // onlyWhite 要求只保留白色 => 非白色过滤
+          continue;
+        }
+        if(filterRolling && (c.mode==='ltr' || c.mode==='rtl')) continue;
+        if(whitelistModes && !whitelistModes.has(c.mode)) continue; // mode 被排除
+        if(emojiRe && emojiRe.test(c.text)) continue;
+      }
+      if(wordSet && wordSet.size){
+        const lower = c._lc || c.text.toLowerCase();
+        if(wordRe && wordRe.test(lower)) continue;
+        let blocked = false;
+        // 逐个匹配（少量关键词情况下可接受）
+        for(const w of wordSet){ if(lower.includes(w)){ blocked=true; break; } }
+        if(blocked) continue;
+      }
+      out.push(c);
+    }
+    if(level===0) return out;
+    // 密度（沿用旧逻辑，但在 out 上处理，避免重复 lowerCase）
+    return applyDensityFilter(out);
+  }
   // 编译过滤资源（关键词集合 / 正则 / emoji 正则）
   function compileFilterResources(){ try {
       if(!window.ede.filterWords){ try { window.ede.filterWords = JSON.parse(localStorage.getItem('danmakuFilterWords')||'[]'); } catch{ window.ede.filterWords=[]; } }
@@ -312,45 +368,52 @@
     return list; }
   function applyKeywordFilters(list){ const set=window.ede._filterWordSet; if(!set || !set.size) return list; const re=window.ede._filterWordRegex; return list.filter(c=>{ const lower=c.text.toLowerCase(); if(re && re.test(lower)) return false; // fallback 逐个
       for(const w of set){ if(lower.includes(w)) return false; } return true; }); }
-  function applyDensityFilter(list){ // 使用原逻辑
-    let level=parseInt(localStorage.getItem('danmakuFilterLevel')||0); if(level===0) return list; let limit = level===4 ? 3 : (9 - level*2); let vertical_limit = level===4 ? 2 : 6; const arr_comments=[]; const vertical_comments=[]; for(const element of list){ let i=Math.ceil(element.time); let iv=Math.ceil(element.time/3); if(!arr_comments[i]) arr_comments[i]=[]; if(!vertical_comments[iv]) vertical_comments[iv]=[]; if(vertical_comments[iv].length < vertical_limit) vertical_comments[iv].push(element); else element.mode='rtl'; if(arr_comments[i].length < limit) arr_comments[i].push(element); } return arr_comments.flat(); }
+  function applyDensityFilter(list){
+    let level=parseInt(localStorage.getItem('danmakuFilterLevel')||0); if(level===0) return list;
+    const limit = level===4 ? 3 : (9 - level*2);
+    const vertical_limit = level===4 ? 2 : 6;
+    const secCount = Object.create(null);
+    const vertCount = Object.create(null); // 3s 窗口
+    const out=[];
+    for(let i=0;i<list.length;i++){
+      const c=list[i]; const sec = Math.ceil(c.time); const vb = Math.ceil(c.time/3);
+      let vc = vertCount[vb]||0; if(vc < vertical_limit){ vertCount[vb]=vc+1; } else { c.mode='rtl'; }
+      let sc = secCount[sec]||0; if(sc < limit){ secCount[sec]=sc+1; out.push(c); }
+    }
+    return out;
+  }
 
-  function rebuildDanmakuFromParsed(){ if(!window.ede.parsedComments){ reloadDanmaku('reload'); return; } if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } const videoElement=getActiveVideo(); const container=getActiveContainer(); if(!videoElement || !container){ reloadDanmaku('reload'); return; } const filtered=applyAllFilters(window.ede.parsedComments); const savedSpeed = parseInt(localStorage.getItem('danmakuSpeed')) || 200; window.ede.danmaku=new Danmaku({container,media:videoElement,comments:filtered,engine:'canvas',speed:savedSpeed}); window.ede.filteredComments=filtered; appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); buildDanmakuDensityData(); renderDanmakuTimeline(); }
+  function rebuildDanmakuFromParsed(){ if(!window.ede.parsedComments){ reloadDanmaku('reload'); return; } if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } const videoElement=getActiveVideo(); const container=getActiveContainer(); if(!videoElement || !container){ reloadDanmaku('reload'); return; } const filtered=applyAllFilters(window.ede.parsedComments); const savedSpeed = parseInt(localStorage.getItem('danmakuSpeed')) || 200; window.ede.danmaku=new Danmaku({container,media:videoElement,comments:filtered,engine:'canvas',speed:savedSpeed}); window.ede.filteredComments=filtered; (function buildSecondIndex(){ try { if(!filtered.length){ window.ede._countsBySecond=null; return; } const dur = Math.max(videoElement.duration||0, filtered[filtered.length-1].time|0)+2; const arr=new Array(Math.ceil(dur)+1).fill(0); for(const c of filtered){ const si = c.time|0; if(si>=0 && si<arr.length) arr[si]++; } window.ede._countsBySecond = arr; } catch(e){ window.ede._countsBySecond=null; } })(); appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); buildDanmakuDensityData(); renderDanmakuTimeline(); }
 
   function onFilterConfigChanged(){ compileFilterResources(); // 关键词/高级过滤/等级变化
     if(window.ede.parsedComments && window.ede.danmaku){ rebuildDanmakuFromParsed(); } else { reloadDanmaku('reload'); } }
 
-  // 动态密度监控
-  function startDynamicDensityMonitor(){ if(window.ede._densityTimer) return; window.ede._dynamicAdjust={active:false, origLevel: null, origSpeed: null}; window.ede._densityTimer=setInterval(()=>{ const dm=window.ede.danmaku; if(!dm||!dm.media) return; const ct=dm.media.currentTime; const upcoming=window.ede.filteredComments? window.ede.filteredComments.filter(c=> c.time>=ct && c.time<ct+5).length:0; const high=120, low=40; if(!window.ede._dynamicAdjust.active && upcoming>high){ const level=parseInt(localStorage.getItem('danmakuFilterLevel')||0); if(level<4){ window.ede._dynamicAdjust.origLevel=level; localStorage.setItem('danmakuFilterLevel', level+1); } const sp=dm.speed; window.ede._dynamicAdjust.origSpeed=sp; const newSpeed=Math.max(60, Math.round(sp*0.7)); if(newSpeed!==sp) dm.speed=newSpeed; window.ede._dynamicAdjust.active=true; showTooltip('弹幕拥挤: 已临时调整过滤/速度'); onFilterConfigChanged(); }
-      else if(window.ede._dynamicAdjust.active && upcoming<low){ // 恢复
-        if(window.ede._dynamicAdjust.origLevel!=null){ localStorage.setItem('danmakuFilterLevel', window.ede._dynamicAdjust.origLevel); }
-        if(window.ede._dynamicAdjust.origSpeed!=null){ dm.speed=window.ede._dynamicAdjust.origSpeed; }
-        window.ede._dynamicAdjust={active:false, origLevel:null, origSpeed:null}; showTooltip('弹幕恢复正常'); onFilterConfigChanged(); }
-  },5000); }
+  // 动态密度监控（自适应调度 setTimeout，减少空闲周期唤醒）
+  function startDynamicDensityMonitor(){ if(window.ede._densityTimer) return; window.ede._dynamicAdjust={active:false, origLevel:null, origSpeed:null, lastChange:0};
+    const tick=()=>{ const dm=window.ede.danmaku; if(!dm||!dm.media){ window.ede._densityTimer=setTimeout(tick,4000); return; } const ct=dm.media.currentTime; let upcoming=0; const counts=window.ede._countsBySecond; if(counts){ const s=Math.floor(ct); const end=Math.min(counts.length-1, s+5); for(let i=s;i<=end;i++) upcoming+=counts[i]||0; }
+      const high=120, low=40; const now=nowSec(); const cool=2; // 2s 冷却
+      if(!window.ede._dynamicAdjust.active && upcoming>high && now-window.ede._dynamicAdjust.lastChange>cool){ const level=parseInt(localStorage.getItem('danmakuFilterLevel')||0); if(level<4){ window.ede._dynamicAdjust.origLevel=level; localStorage.setItem('danmakuFilterLevel', level+1); }
+        const sp=dm.speed; window.ede._dynamicAdjust.origSpeed=sp; const newSpeed=Math.max(60, Math.round(sp*0.7)); if(newSpeed!==sp) dm.speed=newSpeed; window.ede._dynamicAdjust.active=true; window.ede._dynamicAdjust.lastChange=now; showTooltip('弹幕拥挤: 已临时调整过滤/速度'); onFilterConfigChanged(); }
+      else if(window.ede._dynamicAdjust.active && upcoming<low && now-window.ede._dynamicAdjust.lastChange>cool){ if(window.ede._dynamicAdjust.origLevel!=null) localStorage.setItem('danmakuFilterLevel', window.ede._dynamicAdjust.origLevel); if(window.ede._dynamicAdjust.origSpeed!=null) dm.speed=window.ede._dynamicAdjust.origSpeed; window.ede._dynamicAdjust={active:false, origLevel:null, origSpeed:null, lastChange:now}; showTooltip('弹幕恢复正常'); onFilterConfigChanged(); }
+      let next=7000; if(upcoming>high) next=3000; else if(window.ede._dynamicAdjust.active) next=4000; else if(upcoming<low) next=8000; window.ede._densityTimer=setTimeout(tick,next); };
+    window.ede._densityTimer=setTimeout(tick,3000);
+  }
 
-  function danmakuParser(arr){ let id=0; return arr.map(c=>{ const p=c.p; const values=p.split(','); const mode={6:'ltr',1:'rtl',5:'top',4:'bottom'}[values[1]]; if(!mode) return null; const fontSize=parseInt(localStorage.getItem('danmakuFontSize'))||(isMobile?fontSizeMobile:fontSizeDesktop); const color=`000000${Number(values[2]).toString(16)}`.slice(-6); return { id: id++, text:c.m, mode, time: values[0]*1, style:{ fontSize:`${fontSize}px`, color:`#${color}`, textShadow: color==='000000'?'-1px -1px #fff, -1px 1px #fff, 1px -1px #fff, 1px 1px #fff':'-1px -1px #000, -1px 1px #000, 1px -1px #000, 1px 1px #000', font:`${fontSize}px sans-serif`, fillStyle:`#${color}`, strokeStyle: color==='000000'? '#fff':'#000', lineWidth:2.0 } }; }).filter(x=>x); }
+  function danmakuParser(arr){
+    if(!arr||!arr.length) return [];
+    const fontSize = parseInt(localStorage.getItem('danmakuFontSize')) || (isMobile?fontSizeMobile:fontSizeDesktop);
+    const fontDecl = `${fontSize}px sans-serif`;
+    const whiteShadow='-1px -1px #000, -1px 1px #000, 1px -1px #000, 1px 1px #000';
+    const blackShadow='-1px -1px #fff, -1px 1px #fff, 1px -1px #fff, 1px 1px #fff';
+    const modeMap={6:'ltr',1:'rtl',5:'top',4:'bottom'};
+    const out=new Array(arr.length); let oIdx=0; let id=0;
+    for(let i=0;i<arr.length;i++){
+      const c=arr[i]; if(!c||!c.p) continue; const values=c.p.split(','); const mode=modeMap[values[1]]; if(!mode) continue; const colorHex=`000000${Number(values[2]).toString(16)}`.slice(-6); const isBlack = colorHex==='000000'; out[oIdx++]={ id:id++, text:c.m, mode, time:+values[0], style:{ fontSize:`${fontSize}px`, color:`#${colorHex}`, textShadow: isBlack?blackShadow:whiteShadow, font:fontDecl, fillStyle:`#${colorHex}`, strokeStyle: isBlack? '#fff':'#000', lineWidth:2 } }; }
+    out.length=oIdx; return out;
+  }
 
   // ===== 还原后续原功能代码 (搜索、过滤设置、日志、UI 对话框) =====
-  function list2string($obj2) {
-    const $animes = $obj2.animes;
-    let anime_lists = $animes.map(($single_anime) => {
-      return $single_anime.animeTitle + ' 类型:' + $single_anime.typeDescription;
-    });
-    let anime_lists_str = '1:' + anime_lists[0];
-    for (let i = 1; i < anime_lists.length; i++) {
-      anime_lists_str = anime_lists_str + '\n' + (i + 1).toString() + ':' + anime_lists[i];
-    }
-    return anime_lists_str;
-  }
-  function ep2string($obj3) {
-    const $animes = $obj3;
-    let anime_lists = $animes.map(($single_ep) => $single_ep.episodeTitle);
-    let ep_lists_str = '1:' + anime_lists[0];
-    for (let i = 1; i < anime_lists.length; i++) {
-      ep_lists_str = ep_lists_str + '\n' + (i + 1).toString() + ':' + anime_lists[i];
-    }
-    return ep_lists_str;
-  }
+  // (移除未使用的 list2string / ep2string 以减小体积)
 
   const searchAnimeTemplateHtml = `
     <div style="display: flex; flex-direction: column; padding: 2em; background: rgba(31, 31, 31, 0.95);
@@ -614,19 +677,21 @@
     function buildAppearance(){
       secBuilt.appearance=true; const sec=qs('#sec-appearance');
       const makeLine=(id,label,min,max,step,val,unit='')=>`<div class='range-line' data-r='${id}'><span class='lbl'>${label}</span><input type='range' id='${id}' min='${min}' max='${max}' step='${step}' value='${val}'><span class='num' id='${id}Num'></span><span class='unit'>${unit}</span></div>`;
-      sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><div style='display:flex;align-items:center;justify-content:space-between;'><h4 style='margin:0;'>基础参数</h4><button id='apReset' class='ede-icon-btn' title='恢复默认'><span class='md-icon'>${reset_icon}</span></button></div>
+  sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><div style='display:flex;align-items:center;justify-content:space-between;'><h4 style='margin:0;'>基础参数</h4><button id='apReset' class='ede-reset-btn' title='恢复默认'><span class='md-icon' style='font-size:16px;'>${reset_icon}</span><span class='lbl' style='font-size:12px;letter-spacing:.5px;'>重置</span></button></div>
         ${makeLine('apFont','字体',12,48,1,state.font,'px')}
         ${makeLine('apOpacity','不透明',0,100,1,state.opacity,'%')}
-        ${makeLine('apSpeed','速度',60,300,5,state.speed,'')}
+  ${makeLine('apSpeed','速度',60,300,5,state.speed,'')}
+  ${makeLine('apTimelineOp','进度透明',10,100,1, localStorage.getItem('edeTimelineOpacity')||85, '%')}
         <div class='toggle-line' style='display:flex;flex-wrap:wrap;gap:1em;margin-top:4px;'><label style='font-size:12px;display:flex;align-items:center;gap:4px;'><input type='checkbox' id='apTimeline' ${state.timeline?'checked':''}> 热度轨迹</label><label style='font-size:12px;display:flex;align-items:center;gap:4px;'><input type='checkbox' id='apInfo' ${window.ede.showDanmakuInfo?'checked':''}> 信息栏</label></div>
         <div class='note'>数值实时显示；速度越大滚动越快。</div></div></div>`;
       const bindSlider=(id,cb)=>{ const el=sec.querySelector('#'+id); const num=sec.querySelector('#'+id+'Num'); const paint=(r)=>{ paintRangeInput(r); if(num) num.textContent=r.value; }; paint(el); el.addEventListener('input',e=>{ cb(e.target.value); paint(e.target); }); };
       bindSlider('apFont',v=>{ localStorage.setItem('danmakuFontSize', v); if(window.ede.danmaku) reloadDanmaku('reload'); });
       bindSlider('apOpacity',v=>{ localStorage.setItem('danmakuTransparencyLevel', v); globalOpacity=v/100; });
-      bindSlider('apSpeed',v=>{ localStorage.setItem('danmakuSpeed', v); if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
+  bindSlider('apSpeed',v=>{ localStorage.setItem('danmakuSpeed', v); if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
+  bindSlider('apTimelineOp',v=>{ localStorage.setItem('edeTimelineOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-pbp-unplayed-op', val); });
       sec.querySelector('#apTimeline').onchange=e=>{ localStorage.setItem('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
       sec.querySelector('#apInfo').onchange=e=>{ window.ede.showDanmakuInfo=e.target.checked; localStorage.setItem('showDanmakuInfo', e.target.checked); const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display=e.target.checked?'block':'none'; const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText= info_switch_icons[e.target.checked?1:0]; };
-      const resetBtn=sec.querySelector('#apReset'); if(resetBtn){ resetBtn.onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; ['apFont','apOpacity','apSpeed'].forEach(id=>{ const el=sec.querySelector('#'+id); if(!el) return; if(id==='apFont') el.value=defF; else if(id==='apOpacity') el.value=100; else if(id==='apSpeed') el.value=200; el.dispatchEvent(new Event('input')); }); sec.querySelector('#apTimeline').checked=true; sec.querySelector('#apTimeline').dispatchEvent(new Event('change')); }; }
+  const resetBtn=sec.querySelector('#apReset'); if(resetBtn){ resetBtn.onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; const defaults={apFont:defF,apOpacity:100,apSpeed:200,apTimelineOp:85}; Object.entries(defaults).forEach(([id,val])=>{ const el=sec.querySelector('#'+id); if(!el) return; el.value=val; el.dispatchEvent(new Event('input')); }); sec.querySelector('#apTimeline').checked=true; sec.querySelector('#apTimeline').dispatchEvent(new Event('change')); }; }
     }
   // (去重) 保留前一个 buildAppearance 版本，删除重复定义
 
@@ -740,8 +805,9 @@
   function buildDanmakuDensityData(){ try { const list=window.ede.filteredComments||window.ede.parsedComments; if(!list||!list.length){ window.ede._densityData=null; return; } const lastTime=list[list.length-1].time||0; const duration = Math.max(lastTime, getActiveVideo()?.duration||0); const bucketSize = 1; const bucketCount=Math.ceil(duration/bucketSize)+1; const buckets=new Array(bucketCount).fill(0); for(const c of list){ const idx=(c.time/bucketSize)|0; if(idx>=0 && idx<bucketCount) buckets[idx]++; } const max=buckets.reduce((a,b)=>b>a?b:a,0)||1; window.ede._densityData={ buckets,max,bucketSize,duration }; } catch(e){ console.warn('密度数据失败',e); window.ede._densityData=null; } }
   function getProgressSlider(){ return document.querySelector(`${mediaContainerQueryStr} .videoOsdPositionSliderContainer`)||document.querySelector('.videoOsdPositionSliderContainer'); }
   function ensureDensityOverlay(){ const host=getProgressSlider(); if(!host) return null; if(!host.classList.contains('ede-density-host')){ host.classList.add('ede-density-host'); host.style.position='relative'; }
-    let wrap=host.querySelector('.ede-density-wrap'); if(!wrap){ wrap=document.createElement('div'); wrap.className='ede-density-wrap'; wrap.style.cssText='position:absolute;left:0;right:0;bottom:100%;height:38px;padding:0 0 4px;pointer-events:none;'; host.appendChild(wrap); }
-    if(!document.getElementById('ede-density-style')){ const st=document.createElement('style'); st.id='ede-density-style'; st.textContent=`.ede-density-wrap svg{width:100%;height:100%;display:block;} .ede-density-wrap .ede-pbp-all{fill:var(--ede-pbp-base,#0094c766);} .ede-density-wrap .ede-pbp-played{fill:var(--ede-pbp-played,#00a4dc);} .ede-density-wrap .ede-pbp-line{stroke:#fff;stroke-width:2;filter:drop-shadow(0 0 2px #fff);} .ede-density-wrap .ede-pbp-bg{fill:rgba(255,255,255,0.05);} .ede-density-wrap .tip{position:absolute;bottom:100%;background:rgba(0,0,0,.75);color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;white-space:nowrap;transform:translate(-50%, -4px);pointer-events:none;} .ede-density-wrap .ede-hot{fill:url(#ede-pbp-hot-grad);} .ede-density-wrap .ede-pbp-gradient-stop{} `; document.head.appendChild(st); }
+    let wrap=host.querySelector('.ede-density-wrap'); if(!wrap){ wrap=document.createElement('div'); wrap.className='ede-density-wrap'; // 再提高高度 (原 38px -> 46px -> 52px)
+      wrap.style.cssText='position:absolute;left:0;right:0;bottom:100%;height:52px;padding:0 0 8px;pointer-events:none;'; host.appendChild(wrap); }
+  if(!document.getElementById('ede-density-style')){ const st=document.createElement('style'); st.id='ede-density-style'; st.textContent=`:root{--ede-pbp-unplayed-op:0.22;--ede-pbp-blue-op:0.55;--ede-pbp-color:#00a1d6;} .ede-density-wrap svg{width:100%;height:100%;display:block;} .ede-density-wrap .ede-pbp-base{fill:#ffffff;opacity:var(--ede-pbp-unplayed-op,0.22);} .ede-density-wrap .ede-pbp-blue,.ede-density-wrap .ede-pbp-blue-seg{fill:var(--ede-pbp-color,#00a1d6);opacity:var(--ede-pbp-blue-op,0.55);} .ede-density-wrap .ede-pbp-line{stroke:rgba(255,255,255,0.55);stroke-width:1;shape-rendering:crispEdges;} .ede-density-wrap .tip{position:absolute;bottom:100%;background:rgba(0,0,0,.78);color:#fff;font-size:11px;padding:4px 6px;border-radius:4px;white-space:nowrap;transform:translate(-50%, -6px);pointer-events:none;backdrop-filter:blur(4px);} .ede-reset-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;border:1px solid #425166;background:rgba(255,255,255,0.03);color:#cfd7df;font-weight:500;cursor:pointer;backdrop-filter:blur(4px);transition:color .25s,background .25s,border-color .25s,transform .25s;} .ede-reset-btn:hover{background:rgba(255,255,255,0.06);border-color:#56697d;color:#fff;} .ede-reset-btn:active{transform:scale(.92);} .ede-reset-btn .md-icon{transform:rotate(0deg);transition:transform .5s cubic-bezier(.4,.1,.2,1);opacity:.85;} .ede-reset-btn:hover .md-icon{transform:rotate(-180deg);opacity:1;} `; document.head.appendChild(st); }
     return wrap;
   }
   function simplifyBuckets(buckets,maxPoints){ if(buckets.length<=maxPoints) return buckets.map((v,i)=>[i,v]); const step=buckets.length/maxPoints; const out=[]; for(let i=0;i<maxPoints;i++){ const start=Math.floor(i*step); const end=Math.floor((i+1)*step); let sum=0,c=0; for(let j=start;j<end;j++){ sum+=buckets[j]; c++; } out.push([Math.floor((start+end)/2), c?sum/c:0]); } return out; }
@@ -749,37 +815,53 @@
     // Catmull-Rom to Bezier
     let d=`M0 ${height} L ${pts[0][0]} ${pts[0][1]}`; for(let i=0;i<pts.length-1;i++){ const p0=pts[i-1]||pts[i]; const p1=pts[i]; const p2=pts[i+1]; const p3=pts[i+2]||p2; const cp1x=p1[0]+(p2[0]-p0[0])/6; const cp1y=p1[1]+(p2[1]-p0[1])/6; const cp2x=p2[0]-(p3[0]-p1[0])/6; const cp2y=p2[1]-(p3[1]-p1[1])/6; d+=` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`; }
     const lastX=samples[samples.length-1][0]; d+=` L ${lastX} ${height} Z`; return d; }
-  function renderDanmakuTimeline(resizeOnly){ const data=window.ede._densityData; const wrap=ensureDensityOverlay(); if(!wrap) return; if(!data){ wrap.innerHTML=''; return; } const { buckets,max,duration }=data; const height=100; // viewBox height
+  function renderDanmakuTimeline(resizeOnly){ const data=window.ede._densityData; const wrap=ensureDensityOverlay(); if(!wrap) return; if(!data){ wrap.innerHTML=''; return; } const { buckets,max,duration }=data; const height=120; // viewBox height (再提高)
   if(localStorage.getItem('danmakuTimelineEnabled')==='false'){ wrap.style.display='none'; return; } else { wrap.style.display='block'; }
-    const simplified=simplifyBuckets(buckets,180); const scaleX= (x)=> (x/(buckets.length-1))*1000; const scaled = simplified.map(([i,v])=>[scaleX(i), v]); const path=buildCurvePath(scaled,height,max);
-    const video=getActiveVideo(); const progressRatio= video && duration? (video.currentTime/duration):0; const progressX = progressRatio*1000;
-    const hotThresholdHigh=0.75*max; const hotThresholdMid=0.5*max;
-    // Optional heat overlay: build second path segments mask (simplified approach: gradient fill)
+    const simplified=simplifyBuckets(buckets,180); const scaleX= (x)=> (x/(buckets.length-1))*1000; const scaled = simplified.map(([i,v])=>[scaleX(i), v]); const path=buildCurvePath(scaled,height,max); const video=getActiveVideo(); const progressRatio= video && duration? (video.currentTime/duration):0; const progressX = progressRatio*1000;
     wrap.innerHTML=`<svg viewBox='0 0 1000 ${height}' preserveAspectRatio='none'>
       <defs>
-        <clipPath id='ede-pbp-curve'><path d="${path}"></path></clipPath>
-        <linearGradient id='ede-pbp-base-grad' x1='0' y1='1' x2='0' y2='0'>
-          <stop offset='0%' stop-color='#00a4dc22'/>
-          <stop offset='100%' stop-color='#00a4dcaa'/>
-        </linearGradient>
-        <linearGradient id='ede-pbp-hot-grad' x1='0' y1='1' x2='0' y2='0'>
-          <stop offset='0%' stop-color='#ff980033'/>
-          <stop offset='70%' stop-color='#ff5722cc'/>
-        </linearGradient>
+        <clipPath id='ede-pbp-curve-path' clipPathUnits='userSpaceOnUse'>
+          <path d="${path}"></path>
+        </clipPath>
       </defs>
-      <g clip-path='url(#ede-pbp-curve)'>
-        <rect class='ede-pbp-all' fill='url(#ede-pbp-base-grad)' x='0' y='0' width='1000' height='${height}'></rect>
-        <rect class='ede-pbp-played' x='0' y='0' width='${progressX}' height='${height}' opacity='0.35'></rect>
+      <g clip-path='url(#ede-pbp-curve-path)'>
+        <rect class='ede-pbp-base' x='0' y='0' width='1000' height='${height}'></rect>
+        <g class='ede-pbp-blue-group'></g>
         <line class='ede-pbp-line' x1='${progressX}' x2='${progressX}' y1='0' y2='${height}'></line>
       </g>
     </svg>`;
+    // 初始化观看段数据结构
+    if(!window.ede._watchedSegments){ window.ede._watchedSegments=[]; window.ede._lastSegmentUpdateTime=0; }
+    drawWatchedSegments();
     if(resizeOnly) return;
     setupCurveHover(wrap, duration, buckets, height, path);
   }
-  function setupCurveHover(wrap,duration,buckets,height,path){ if(wrap._curveHoverBound) return; wrap._curveHoverBound=true; let tip=document.createElement('div'); tip.className='tip'; tip.style.display='none'; wrap.appendChild(tip); const svg=wrap.querySelector('svg'); const video=getActiveVideo(); svg.addEventListener('mousemove',e=>{ const rect=svg.getBoundingClientRect(); const x=Math.min(Math.max(e.clientX-rect.left,0),rect.width); const ratio=x/rect.width; const t=ratio*duration; const idx=Math.min(buckets.length-1, Math.max(0, Math.floor(ratio*buckets.length))); const count=buckets[idx]; tip.style.display='block'; tip.style.left=x+'px'; tip.innerHTML=`${formatTime(t)}<br>${count}条`; }); svg.addEventListener('mouseleave',()=>{ tip.style.display='none'; }); svg.addEventListener('click',e=>{ const rect=svg.getBoundingClientRect(); const x=Math.min(Math.max(e.clientX-rect.left,0),rect.width); const ratio=x/rect.width; if(video){ video.currentTime=ratio*duration; updateTimelineCursor(); } }); }
-  function updateTimelineCursor(){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const data=window.ede._densityData; if(!data) return; const video=getActiveVideo(); if(!video||!video.duration) return; const svg=wrap.querySelector('svg'); if(!svg) return; const duration=data.duration; const progressRatio=video.currentTime/duration; const progressX=progressRatio*1000; const line=svg.querySelector('.ede-pbp-line'); if(line){ line.setAttribute('x1',progressX); line.setAttribute('x2',progressX); } const played=svg.querySelector('.ede-pbp-played'); if(played){ played.setAttribute('width',progressX); }
+  // 绘制已观看段（支持跳跃空白）
+  function drawWatchedSegments(force){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const group=wrap.querySelector('.ede-pbp-blue-group'); if(!group) return; const data=window.ede._densityData; const video=getActiveVideo(); if(!data||!video) return; const {duration}=data; const W=1000; const svg=wrap.querySelector('svg'); if(!svg) return; const vh=svg.viewBox.baseVal.height;
+    if(force){ group.innerHTML=''; for(const seg of (window.ede._watchedSegments||[])){ const s=Math.max(0, Math.min(seg.start, duration)); const e=Math.max(s, Math.min(seg.end, duration)); if(e<=s) continue; const x=(s/duration)*W; const w=((e-s)/duration)*W; const rect=document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('class','ede-pbp-blue-seg'); rect.setAttribute('x', x); rect.setAttribute('y', 0); rect.setAttribute('width', w); rect.setAttribute('height', vh); group.appendChild(rect); seg._el=rect; } return; }
+    // 增量：只处理最后一段
+    const segs=window.ede._watchedSegments||[]; if(!segs.length) return; const last=segs[segs.length-1]; if(!last._el){ // 创建
+      const s=Math.max(0, Math.min(last.start, duration)); const e=Math.max(s, Math.min(last.end, duration)); if(e<=s) return; const rect=document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('class','ede-pbp-blue-seg'); rect.setAttribute('y',0); rect.setAttribute('height',vh); group.appendChild(rect); last._el=rect; }
+    const s=Math.max(0, Math.min(last.start, duration)); const e=Math.max(s, Math.min(last.end, duration)); if(e<=s) return; const x=(s/duration)*W; const w=((e-s)/duration)*W; last._el.setAttribute('x', x); last._el.setAttribute('width', w);
   }
-  function attachTimelineMediaEvents(){ const video=getActiveVideo(); if(!video||video._densityBound) return; video._densityBound=true; video.addEventListener('timeupdate', ()=> updateTimelineCursor()); }
+  // 维护观看进度段（精简+动态阈值）
+  function updateWatchedSegments(force){ const video=getActiveVideo(); const data=window.ede._densityData; if(!video||!data||!video.duration) return; const t=video.currentTime; const segs=window.ede._watchedSegments||[]; const pr=video.playbackRate||1; const dynamicGap=Math.min(3, Math.max(0.8, 0.5*pr + 0.4));
+    if(!segs.length){ segs.push({start:0,end:t}); window.ede._watchedSegments=segs; drawWatchedSegments(true); return; }
+    const last=segs[segs.length-1];
+    const forwardGap=t-last.end; // 仅关心前进
+    if(forwardGap > dynamicGap){ segs.push({start:t,end:t}); drawWatchedSegments(true); return; }
+    if(t>last.end){ last.end=t; if(force || t - (window.ede._lastSegmentUpdateTime||0) > 0.25){ drawWatchedSegments(false); window.ede._lastSegmentUpdateTime=t; } }
+  }
+  function setupCurveHover(wrap,duration,buckets,height,path){ if(wrap._curveHoverBound) return; wrap._curveHoverBound=true; let tip=document.createElement('div'); tip.className='tip'; tip.style.display='none'; wrap.appendChild(tip); const svg=wrap.querySelector('svg'); const video=getActiveVideo(); svg.addEventListener('mousemove',e=>{ const rect=svg.getBoundingClientRect(); const x=Math.min(Math.max(e.clientX-rect.left,0),rect.width); const ratio=x/rect.width; const t=ratio*duration; const idx=Math.min(buckets.length-1, Math.max(0, Math.floor(ratio*buckets.length))); const count=buckets[idx]; tip.style.display='block'; tip.style.left=x+'px'; tip.innerHTML=`${formatTime(t)}<br>${count}条`; }); svg.addEventListener('mouseleave',()=>{ tip.style.display='none'; }); svg.addEventListener('click',e=>{ const rect=svg.getBoundingClientRect(); const x=Math.min(Math.max(e.clientX-rect.left,0),rect.width); const ratio=x/rect.width; if(video){ video.currentTime=ratio*duration; updateTimelineCursor(); } }); }
+  function updateTimelineCursor(){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const data=window.ede._densityData; if(!data) return; const video=getActiveVideo(); if(!video||!video.duration) return; const svg=wrap.querySelector('svg'); if(!svg) return; const duration=data.duration; const progressRatio=video.currentTime/duration; const progressX=progressRatio*1000; const line=svg.querySelector('.ede-pbp-line'); if(line){ line.setAttribute('x1',progressX); line.setAttribute('x2',progressX); } const blue=svg.querySelector('.ede-pbp-blue'); if(blue){ blue.setAttribute('width',progressX); }
+    updateWatchedSegments();
+  }
+  function attachTimelineMediaEvents(){ const video=getActiveVideo(); if(!video||video._densityBound) return; video._densityBound=true; // 节流 timeupdate
+    const baseInterval=0.08; let last=0; let scheduled=false; function flush(){ scheduled=false; updateTimelineCursor(); }
+    video.addEventListener('timeupdate', ()=>{ const t=video.currentTime; const pr=Math.max(1, video.playbackRate||1); const interval=baseInterval/Math.min(pr,2); if(t-last>=interval){ last=t; updateTimelineCursor(); } else if(!scheduled){ scheduled=true; setTimeout(flush, (interval-(t-last))*1000); } });
+    video.addEventListener('seeked', ()=>{ updateWatchedSegments(true); last=0; updateTimelineCursor(); }); }
+  // 追加暂停平滑处理：动态系数缓冲高倍速恢复跳跃 (使用统一 nowSec)
+  (function enhancePauseSmooth(){ const video=getActiveVideo(); if(!video) return; if(video._edePauseSmoothBound) return; video._edePauseSmoothBound=true; video.addEventListener('pause', ()=>{ window.ede._pauseWallClock = nowSec(); }); video.addEventListener('play', ()=>{ if(!window.ede.danmaku) return; if(!window.ede._pauseWallClock) return; const delta = nowSec() - window.ede._pauseWallClock; const pr=Math.max(1, video.playbackRate||1); const factor = Math.min(0.9, 0.32 + (pr-1)*0.28); const smoothDelay = Math.min(0.8, delta * factor); try { const rl = window.ede.danmaku._ && window.ede.danmaku._.runningList; if(Array.isArray(rl)) rl.forEach(c=>{ if(c && typeof c._utc==='number') c._utc += smoothDelay; }); } catch(e){} window.ede._pauseWallClock = 0; }); })();
   function formatTime(sec){ sec=Math.max(sec,0); const h=Math.floor(sec/3600); const m=Math.floor((sec%3600)/60); const s=Math.floor(sec%60); return (h>0? h.toString().padStart(2,'0')+':':'')+m.toString().padStart(2,'0')+':'+s.toString().padStart(2,'0'); }
 
   // ====== 独立弹幕热度图对话框 (柱状+平滑折线) ======
@@ -801,7 +883,7 @@
         </div>
       </div>
       <div style="font-size:12px;color:#aaa;margin-bottom:.8em;line-height:1.4;">显示整段视频各时间区间的弹幕密度。柱状代表原始计数，折线为平滑值。鼠标悬停可查看；点击跳转播放。</div>
-      <div id="heatmapCanvasWrap" style="position:relative;width:100%;height:200px;background:rgba(255,255,255,0.05);border-radius:8px;overflow:hidden;">
+  <div id="heatmapCanvasWrap" style="position:relative;width:100%;height:200px;background:rgba(255,255,255,0.05);border-radius:8px;overflow:visible;">
         <canvas id="heatmapCanvas" style="width:100%;height:100%;"></canvas>
         <div id="heatmapHoverLine" style="position:absolute;top:0;bottom:0;width:1px;background:#fff;pointer-events:none;opacity:0;"></div>
         <div id="heatmapTooltip" style="position:absolute;padding:4px 8px;font-size:12px;background:rgba(0,0,0,0.8);color:#fff;border-radius:4px;pointer-events:none;opacity:0;transform:translate(-50%,-120%);"></div>
@@ -819,7 +901,8 @@
     }
     resize(); window.addEventListener('resize', resize);
     const hoverLine=dialog.querySelector('#heatmapHoverLine'); const tip=dialog.querySelector('#heatmapTooltip'); const wrap=dialog.querySelector('#heatmapCanvasWrap');
-    wrap.addEventListener('mousemove',e=>{ const rect=wrap.getBoundingClientRect(); const x=e.clientX-rect.left; const pct=x/rect.width; const idx=Math.min(bucketCount-1, Math.floor(pct*bucketCount)); const tStart=idx/bucketCount*duration; const tMid=tStart + duration/bucketCount/2; hoverLine.style.left=x+'px'; hoverLine.style.opacity=1; tip.style.left=x+'px'; tip.style.top='20px'; tip.style.opacity=1; tip.textContent=`${formatTime(tMid)}  条:${bucket[idx]}  平滑:${Math.round(smooth[idx])}`; });
+  // 鼠标移动时显示提示；为避免被裁剪，容器允许溢出；若仍超出顶部则下移
+  wrap.addEventListener('mousemove',e=>{ const rect=wrap.getBoundingClientRect(); const x=e.clientX-rect.left; const pct=x/rect.width; const idx=Math.min(bucketCount-1, Math.floor(pct*bucketCount)); const tStart=idx/bucketCount*duration; const tMid=tStart + duration/bucketCount/2; hoverLine.style.left=x+'px'; hoverLine.style.opacity=1; tip.style.left=x+'px'; tip.style.top='18px'; tip.style.opacity=1; tip.textContent=`${formatTime(tMid)}  条:${bucket[idx]}  平滑:${Math.round(smooth[idx])}`; requestAnimationFrame(()=>{ const tipRect=tip.getBoundingClientRect(); if(tipRect.top < rect.top){ tip.style.top='30px'; tip.style.transform='translate(-50%,-60%)'; } else { tip.style.transform='translate(-50%,-120%)'; } }); });
     wrap.addEventListener('mouseleave',()=>{ hoverLine.style.opacity=0; tip.style.opacity=0; });
     wrap.addEventListener('click',e=>{ const rect=wrap.getBoundingClientRect(); const x=e.clientX-rect.left; const pct=x/rect.width; const targetTime=pct*duration; if(video){ video.currentTime=targetTime; } });
     let raf; function loop(){ if(!document.body.contains(dialog)) return; draw(); const label=dialog.querySelector('#heatmapCurrentTime'); if(label && video) label.textContent=`当前: ${formatTime(video.currentTime)}`; raf=requestAnimationFrame(loop); } loop();
