@@ -3,7 +3,7 @@
 // @namespace    https://github.com/kumu-ze/dd-danmaku
 // @description  Emby 弹幕插件：弹幕获取/过滤/外观/热度图/快捷设置
 // @author       kumuze, RyoLee
-// @version      2.0.1
+// @version      2.1.1
 // @license      MIT
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
@@ -21,7 +21,8 @@
   const danmaku_icons = ['\uE7A2', '\uE0B9'];
   const search_icon = '\uE881';
   const translate_icon = '\uE927';
-  const filter_icons = ['\uE3E0', '\uE3D0', '\uE3D1', '\uE3D2', '\uE3D2']; // 扩展支持0-4共5级
+  // 过滤强度图标（使用字体连字，适配不同 Material 字体族更稳妥）
+  const filter_icons = ['filter_none', 'filter_1', 'filter_2', 'filter_3', 'filter_4'];
   // removed unused transparency_icons
   const info_switch_icons = ['\uE8F5', '\uE8F4'];
   const more_filter_icon = '\uE5D3';
@@ -53,6 +54,8 @@
   const fontSizeDesktop = 25;
   const fontSizeMobile = 15;
   if (/Mobi|Android|iPhone/i.test(navigator.userAgent)) isMobile = true;
+  // 版本号（用于弹幕中心显示）
+  const EDE_VERSION = '2.1.1';
 
   // StorageManager (阶段1)
   const StorageManager = {
@@ -71,6 +74,11 @@
   function debounce(fn, delay=300){ let t; function debounced(...args){ clearTimeout(t); t=setTimeout(()=>fn.apply(this,args), delay);} debounced.cancel=()=>clearTimeout(t); return debounced; }
   // 统一当前秒级时间函数（便于后续精度/源切换）
   function nowSec(){ return performance.now()/1000; }
+  // 判断是否可用 LZString 压缩/解压（脚本未内置该库，需做兼容）
+  function hasLZ(){
+    try { return typeof LZString!=='undefined' && typeof LZString.compressToBase64==='function' && typeof LZString.decompressFromBase64==='function'; }
+    catch { return false; }
+  }
   // 缓存视频节点，避免频繁 querySelector
   let _cachedVideo=null;
   function getActiveVideo(){
@@ -256,9 +264,68 @@
 
   async function searchAnimeDirectly(name){ try { const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex]; const url=`${proxyServer}api/v2/search/episodes?anime=${encodeURIComponent(name)}`; const resp=await fetch(url); if(!resp.ok) throw new Error('HTTP '+resp.status); const data=await resp.json(); if(!data || !data.animes || data.animes.length===0) return null; if(window.ede.cacheEnabled){ localStorage.setItem(`_search_cache_${encodeURIComponent(name)}` , JSON.stringify({timestamp:Date.now(),data})); } return data; } catch(e){ if(!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length-1){ window.ede.currentProxyIndex++; localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex); showTooltip(`切换备用代理 ${window.ede.currentProxyIndex+1}`); return searchAnimeDirectly(name); } console.error('搜索失败', e); return null; } }
 
-  async function getComments(episodeId){ if(!window.ede.cacheEnabled) return getCommentsDirectly(episodeId); const cacheKey=`_danmaku_cache_${episodeId}`; const cached=localStorage.getItem(cacheKey); if(cached){ try { const o=JSON.parse(cached); if(o.timestamp > Date.now()-3600000){ if(o.compressed){ const json=LZString.decompressFromBase64(o.data); return JSON.parse(json); } return o.comments; } } catch{} } return getCommentsDirectly(episodeId); }
+  async function getComments(episodeId){
+    if(!window.ede.cacheEnabled) return getCommentsDirectly(episodeId);
+    const cacheKey=`_danmaku_cache_${episodeId}`;
+    const cached=localStorage.getItem(cacheKey);
+    if(cached){
+      try{
+        const o=JSON.parse(cached);
+        if(o.timestamp > Date.now()-3600000){
+          if(o.compressed){
+            if(hasLZ()){
+              const json=LZString.decompressFromBase64(o.data);
+              return JSON.parse(json);
+            }
+            // 无法解压则走网络
+          } else if(o.comments){
+            return o.comments;
+          }
+        }
+      } catch{}
+    }
+    return getCommentsDirectly(episodeId);
+  }
 
-  async function getCommentsDirectly(episodeId){ try { const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex]; const url=`${proxyServer}api/v2/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`; const resp=await fetch(url); const text=await resp.text(); try { const data=JSON.parse(text); if(data.errorCode||data.hasError) throw new Error(data.errorMessage||data.message||'API错误'); if(!data.comments || !Array.isArray(data.comments)) throw new Error('返回数据格式错误'); if(window.ede.cacheEnabled){ try { const compressed=LZString.compressToBase64(JSON.stringify(data.comments)); localStorage.setItem(`_danmaku_cache_${episodeId}`, JSON.stringify({timestamp:Date.now(), compressed:true, data:compressed})); } catch(e){ localStorage.setItem(`_danmaku_cache_${episodeId}`, JSON.stringify({timestamp:Date.now(), comments:data.comments})); } } console.log('弹幕下载成功: '+data.comments.length); return data.comments; } catch(pe){ window.ede.lastApiResponse=text; throw new Error('解析响应失败: '+pe.message); } } catch(e){ if(!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length-1){ window.ede.currentProxyIndex++; localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex); showTooltip(`切换备用代理 ${window.ede.currentProxyIndex+1}`); return getCommentsDirectly(episodeId); } window.ede.lastError=e.stack; console.error('获取弹幕失败', e); sendNotification('获取弹幕失败', e.message); return null; } }
+  async function getCommentsDirectly(episodeId){
+    try {
+      const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex];
+      const url=`${proxyServer}api/v2/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
+      const resp=await fetch(url);
+      const text=await resp.text();
+      try {
+        const data=JSON.parse(text);
+        if(data.errorCode||data.hasError) throw new Error(data.errorMessage||data.message||'API错误');
+        if(!data.comments || !Array.isArray(data.comments)) throw new Error('返回数据格式错误');
+        if(window.ede.cacheEnabled){
+          try{
+            if(hasLZ()){
+              const compressed=LZString.compressToBase64(JSON.stringify(data.comments));
+              localStorage.setItem(`_danmaku_cache_${episodeId}`, JSON.stringify({timestamp:Date.now(), compressed:true, data:compressed}));
+            } else {
+              localStorage.setItem(`_danmaku_cache_${episodeId}`, JSON.stringify({timestamp:Date.now(), comments:data.comments}));
+            }
+          } catch(e){ /* 忽略缓存写入异常 */ }
+        }
+        console.log('弹幕下载成功: '+data.comments.length);
+        return data.comments;
+      } catch(pe){
+        window.ede.lastApiResponse=text;
+        throw new Error('解析响应失败: '+pe.message);
+      }
+    } catch(e){
+      if(!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length-1){
+        window.ede.currentProxyIndex++;
+        localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex);
+        showTooltip(`切换备用代理 ${window.ede.currentProxyIndex+1}`);
+        return getCommentsDirectly(episodeId);
+      }
+      window.ede.lastError=e.stack;
+      console.error('获取弹幕失败', e);
+      sendNotification('获取弹幕失败', e.message);
+      return null;
+    }
+  }
 
   async function createDanmaku(comments){ if(!comments) return; window.ede.originalCount=comments.length; const videoElement=getActiveVideo(); if(!videoElement) return; if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } // 解析并保存
     // 确保过滤资源已编译
@@ -271,20 +338,33 @@
     appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); if(window.ede.ob) window.ede.ob.disconnect(); window.ede.ob = new ResizeObserver(()=>{ if(window.ede.danmaku){ window.ede.danmaku.resize(); renderDanmakuTimeline(true); } }); window.ede.ob.observe(container); startDynamicDensityMonitor(); buildDanmakuDensityData(); renderDanmakuTimeline(); attachTimelineMediaEvents(); }
 
   // 新核心重载 + 防抖 (阶段1)
-  function coreReloadDanmaku(type='check'){
+  async function coreReloadDanmaku(type='check'){
     if(window.ede.loading){ console.log('正在重新加载'); return; }
     window.ede.loading=true;
-    const videoElement=getActiveVideo();
-    if(!videoElement){ window.ede.loading=false; setTimeout(()=>reloadDanmaku(type,true),500); return; }
-    if(type==='reload'){
-      const currentEpisodeId=window.ede?.episode_info?.episodeId;
-      Object.keys(localStorage).forEach(k=>{ if(k.startsWith('_danmaku_cache_')){ if(!currentEpisodeId || k===`_danmaku_cache_${currentEpisodeId}`){ localStorage.removeItem(k);} } });
+    try {
+      const videoElement=getActiveVideo();
+      if(!videoElement){ setTimeout(()=>reloadDanmaku(type,true),500); return; }
+      if(type==='reload'){
+        const currentEpisodeId=window.ede?.episode_info?.episodeId;
+        Object.keys(localStorage).forEach(k=>{ if(k.startsWith('_danmaku_cache_')){ if(!currentEpisodeId || k===`_danmaku_cache_${currentEpisodeId}`){ localStorage.removeItem(k);} } });
+      }
+      const info = await getEpisodeInfo(type!=='search');
+      if(!info){ appendvideoOsdDanmakuInfo(); return; }
+      if(type!=='search' && type!=='reload' && window.ede.danmaku && window.ede.episode_info && window.ede.episode_info.episodeId===info.episodeId){
+        // 当前播放视频未变动
+        return;
+      }
+      window.ede.episode_info=info;
+      const comments = await getComments(info.episodeId);
+      if(!comments) return;
+      await new Promise(res=>{ const check=()=>{ const c=getActiveContainer(); if(c) res(); else setTimeout(check,200); }; check(); });
+      createDanmaku(comments);
+      const c=document.getElementById('danmakuCtr'); if(c) c.style.opacity=1;
+    } catch (err){
+      console.error('弹幕加载失败:', err);
+    } finally {
+      window.ede.loading=false;
     }
-    getEpisodeInfo(type!=='search')
-      .then(info=> new Promise((resolve,reject)=>{ if(!info){ appendvideoOsdDanmakuInfo(); if(type!=='init') reject('播放器未完成加载'); else reject(null); } if(type!=='search' && type!=='reload' && window.ede.danmaku && window.ede.episode_info && window.ede.episode_info.episodeId===info.episodeId){ reject('当前播放视频未变动'); } else { window.ede.episode_info=info; resolve(info.episodeId);} }))
-      .then(episodeId => getComments(episodeId).then(comments=> new Promise(res=>{ const check=()=>{ const c=getActiveContainer(); if(c) res(comments); else setTimeout(check,200); }; check(); }).then(cs=>createDanmaku(cs))), msg=>{ if(msg) console.log(msg); })
-      .then(()=>{ window.ede.loading=false; const c=document.getElementById('danmakuCtr'); if(c) c.style.opacity=1; })
-      .catch(err=>{ console.error('弹幕加载失败:', err); window.ede.loading=false; });
   }
   const debouncedCore = debounce((type)=>coreReloadDanmaku(type),300);
   function reloadDanmaku(type='check', immediate=false){ if(immediate){ debouncedCore.cancel(); coreReloadDanmaku(type); } else { debouncedCore(type); } }
@@ -653,7 +733,7 @@
       <div class="dc-nav" id="dcNav"></div>
       <div class="dc-body">
         <div class="dc-header"><div style="display:flex;align-items:center;gap:10px;">
-          <strong style="font-size:15px;display:flex;align-items:center;gap:6px;">弹幕中心</strong>
+          <strong style="font-size:15px;display:flex;align-items:center;gap:6px;">弹幕中心 <span class='badge'>v${EDE_VERSION}</span></strong>
         </div><div class="toolbar-small"><button id="dcReload" title="重载"><span class="md-icon">autorenew</span></button><button id="dcClose" title="关闭"><span class="md-icon">close</span></button></div></div>
         <div class="dc-content" id="dcContent">
           ${navItems.map(n=>`<section class='dc-section' id='sec-${n.id}' data-sec='${n.id}'></section>`).join('')}
@@ -817,7 +897,7 @@
     const lastX=samples[samples.length-1][0]; d+=` L ${lastX} ${height} Z`; return d; }
   function renderDanmakuTimeline(resizeOnly){ const data=window.ede._densityData; const wrap=ensureDensityOverlay(); if(!wrap) return; if(!data){ wrap.innerHTML=''; return; } const { buckets,max,duration }=data; const height=120; // viewBox height (再提高)
   if(localStorage.getItem('danmakuTimelineEnabled')==='false'){ wrap.style.display='none'; return; } else { wrap.style.display='block'; }
-    const simplified=simplifyBuckets(buckets,180); const scaleX= (x)=> (x/(buckets.length-1))*1000; const scaled = simplified.map(([i,v])=>[scaleX(i), v]); const path=buildCurvePath(scaled,height,max); const video=getActiveVideo(); const progressRatio= video && duration? (video.currentTime/duration):0; const progressX = progressRatio*1000;
+    const simplified=simplifyBuckets(buckets,180); const denom=Math.max(1,(buckets.length-1)); const scaleX= (x)=> (x/denom)*1000; const scaled = simplified.map(([i,v])=>[scaleX(i), v]); const path=buildCurvePath(scaled,height,max); const video=getActiveVideo(); const progressRatio= video && duration? (video.currentTime/duration):0; const progressX = progressRatio*1000;
     wrap.innerHTML=`<svg viewBox='0 0 1000 ${height}' preserveAspectRatio='none'>
       <defs>
         <clipPath id='ede-pbp-curve-path' clipPathUnits='userSpaceOnUse'>
