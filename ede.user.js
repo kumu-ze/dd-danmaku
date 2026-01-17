@@ -371,7 +371,7 @@
     return episodeInfo;
   }
 
-  const defaultProxyServers=['https://www.kumuze-dd.icu/'];
+  const defaultProxyServers=['https://dd.kumuze.top/'];
   async function trySearch(name){ if(!window.ede.cacheEnabled) return searchAnimeDirectly(name); const cacheKey=`_search_cache_${encodeURIComponent(name)}`; const cached=localStorage.getItem(cacheKey); if(cached){ const o=JSON.parse(cached); if(o.timestamp > Date.now()-86400000){ window.ede.autoMatchStatus='使用缓存结果'; return o.data; } } return searchAnimeDirectly(name); }
 
   async function searchAnimeDirectly(name){ try { const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex]; const url=`${proxyServer}api/v2/search/episodes?anime=${encodeURIComponent(name)}`; const resp=await fetch(url); if(!resp.ok) throw new Error('HTTP '+resp.status); const data=await resp.json(); if(!data || !data.animes || data.animes.length===0) return null; if(window.ede.cacheEnabled){ localStorage.setItem(`_search_cache_${encodeURIComponent(name)}` , JSON.stringify({timestamp:Date.now(),data})); } return data; } catch(e){ if(!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length-1){ window.ede.currentProxyIndex++; localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex); showTooltip(`切换备用代理 ${window.ede.currentProxyIndex+1}`); return searchAnimeDirectly(name); } console.error('搜索失败', e); return null; } }
