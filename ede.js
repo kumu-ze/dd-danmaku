@@ -3,7 +3,7 @@
 // @namespace    https://github.com/kumu-ze/dd-danmaku
 // @description  Emby 弹幕插件：弹幕获取/过滤/外观/热度图/快捷设置
 // @author       kumuze, RyoLee
-// @version      2.1.2
+// @version      2.2.5
 // @license      MIT
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
@@ -13,7 +13,6 @@
 (async function() {
   'use strict';
   // ------ configs start------
-  const check_interval = 200; // 已被 MutationObserver 取代, 保留兼容
   const chConverTtitle = ['当前状态: 未启用', '当前状态: 转换为简体', '当前状态: 转换为繁体'];
 
   //图标常量
@@ -31,6 +30,7 @@
   const reset_icon = '\uE166';
   const heatmap_icon = '\uE6DD'; // analytics-like icon
   const center_icon = '\uE871'; // dashboard icon for 弹幕中心，区别于设置
+  const list_icon = '\uE8EF'; // list icon for 弹幕列表
 
   //通用参数常量
   const menubarOptions = { class: 'flex flex-direction-row' };
@@ -55,23 +55,41 @@
   const fontSizeMobile = 15;
   if (/Mobi|Android|iPhone/i.test(navigator.userAgent)) isMobile = true;
   // 版本号（用于弹幕中心显示）
-  const EDE_VERSION = '2.1.2';
+  const EDE_VERSION = '2.2.5';
 
-  // StorageManager (阶段1)
+  // StorageManager (阶段1) - 带内存缓存以减少 localStorage 访问
   const StorageManager = {
+    _cache: Object.create(null),
+    _cacheTs: 0,
+    _cacheMaxAge: 5000, // 缓存有效期 5 秒
     get(key, def = null) {
       try {
+        // 内存缓存命中（短时内多次读取同一 key）
+        const now = Date.now();
+        if (this._cache[key] !== undefined && (now - this._cacheTs) < this._cacheMaxAge) {
+          return this._cache[key];
+        }
         const v = localStorage.getItem(key);
-        if (v === null) return def;
-        try { return JSON.parse(v); } catch { return v; }
+        if (v === null) { this._cache[key] = def; return def; }
+        try { const parsed = JSON.parse(v); this._cache[key] = parsed; this._cacheTs = now; return parsed; } catch { this._cache[key] = v; return v; }
       } catch { return def; }
     },
     set(key, val) {
-      try { localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val)); } catch(e){ console.warn('Storage set fail', key, e); }
+      try {
+        const str = typeof val === 'string' ? val : JSON.stringify(val);
+        localStorage.setItem(key, str);
+        this._cache[key] = val;
+      } catch(e){ console.warn('Storage set fail', key, e); }
     },
-    remove(key){ localStorage.removeItem(key); }
+    remove(key){ localStorage.removeItem(key); delete this._cache[key]; },
+    invalidate(key){ delete this._cache[key]; },
+    invalidateAll(){ this._cache = Object.create(null); }
   };
   function debounce(fn, delay=300){ let t; function debounced(...args){ clearTimeout(t); t=setTimeout(()=>fn.apply(this,args), delay);} debounced.cancel=()=>clearTimeout(t); return debounced; }
+  // 统一时间格式化函数（全局复用）
+  function formatTime(sec){ sec=Math.max(sec,0); const h=Math.floor(sec/3600); const m=Math.floor((sec%3600)/60); const s=Math.floor(sec%60); return (h>0? h.toString().padStart(2,'0')+':':'')+m.toString().padStart(2,'0')+':'+s.toString().padStart(2,'0'); }
+  // 统一滑块渐变填充函数（全局复用）
+  function paintRangeInput(r, color='#00a4dc'){ if(!r) return; const v=(r.value-r.min)/(r.max-r.min)*100; r.style.background=`linear-gradient(to right, ${color} 0%, ${color} ${v}%, #444 ${v}%, #444 100%)`; }
   // 统一当前秒级时间函数（便于后续精度/源切换）
   function nowSec(){ return performance.now()/1000; }
   // 判断是否可用 LZString 压缩/解压（脚本未内置该库，需做兼容）
@@ -96,19 +114,31 @@
   const filterButtonOpts = { title:'过滤等级(立即生效)', id:'filteringDanmaku', innerText:null, onclick: () => { let level = parseInt(StorageManager.get('danmakuFilterLevel', 0)) || 0; level = (level + 1) % 5; if(level===0){ const last=parseInt(localStorage.getItem('danmakuLastFilterLevel')||'0'); if(last===0) localStorage.setItem('danmakuLastFilterLevel','2'); } else { localStorage.setItem('danmakuLastFilterLevel', level); } StorageManager.set('danmakuFilterLevel', level); const btn=document.querySelector('#filteringDanmaku .md-icon'); if(btn) btn.innerText = filter_icons[level]; reloadDanmaku('reload'); } };
   // removed legacy transparencyRangeSliderOpts (quick panels now manage directly)
   const infoSwitchButtonOpts = { title:'弹幕信息显示', id:'switchDanmakuInfo', innerText:null, onclick:() => { window.ede.showDanmakuInfo = !window.ede.showDanmakuInfo; localStorage.setItem('showDanmakuInfo', window.ede.showDanmakuInfo); const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0]; const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display = window.ede.showDanmakuInfo?'block':'none'; } };
-  const danmakuTypeFilterOpts = { bottom:{id:'bottom',name:'底部弹幕'}, top:{id:'top',name:'顶部弹幕'}, rolling:{id:'rolling',name:'滚动弹幕'}, onlyWhite:{id:'onlyWhite',name:'彩色弹幕'}, emoji:{id:'emoji',name:'emoji'} };
+  const danmakuTypeFilterOpts = { bottom:{id:'bottom',name:'底部弹幕'}, top:{id:'top',name:'顶部弹幕'}, ltr:{id:'ltr',name:'从左至右'}, rolling:{id:'rolling',name:'滚动弹幕'}, onlyWhite:{id:'onlyWhite',name:'彩色弹幕'}, emoji:{id:'emoji',name:'emoji'} };
+  // 弹幕来源平台定义（参考 chen3861229/dd-danmaku）
+  const danmakuSourcePlatforms = {
+    BiliBili: { id: 'BiliBili', name: 'B站 (BiliBili)', color: '#fb7299' },
+    AcFun: { id: 'AcFun', name: 'A站 (AcFun)', color: '#fd4c5d' },
+    Gamer: { id: 'Gamer', name: '巴哈 (Gamer)', color: '#00a7eb' },
+    DanDanPlay: { id: 'DanDanPlay', name: '弹弹 (DanDanPlay)', color: '#ff9000' },
+    Diyidan: { id: 'Diyidan', name: 'D站 (Diyidan)', color: '#35b6f7' },
+    Iyingdi: { id: 'Iyingdi', name: '异世界动漫', color: '#9966cc' },
+    Unknown: { id: 'Unknown', name: '未知来源', color: '#888' }
+  };
   const moreFilterButtonOpts = { title:'过滤(中心)', id:'moreFilteringDanmaku', innerText:more_filter_icon, onclick:()=>showDanmakuCenterDialog('filter') }; // 指向中心
   const logButtonOpts = { title:'显示调试日志', id:'showDanmakuLog', innerText:log_icon, onclick:()=>showLogDialog() };
   // 轻量外观设置快速面板 (前置定义，避免未定义错误)
   function showQuickAppearanceDialog(){
     if(document.getElementById('ede-quick-appearance')) return;
     const dialog=document.createElement('dialog'); dialog.id='ede-quick-appearance'; dialog.style='border:0;padding:0;background:transparent;';
-    const font=localStorage.getItem('danmakuFontSize') || (isMobile?fontSizeMobile:fontSizeDesktop);
-    const opacity=localStorage.getItem('danmakuTransparencyLevel')||'100';
-    const speed=localStorage.getItem('danmakuSpeed')||'200';
-    const timeline=(localStorage.getItem('danmakuTimelineEnabled')!=='false');
-    dialog.innerHTML=`<div class='qa-shell ede-unified-shell' style="--qa-accent:#00a4dc;display:flex;flex-direction:column;min-width:440px;max-width:500px;background:linear-gradient(135deg,rgba(32,32,36,.94),rgba(18,18,20,.94));backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:18px;overflow:hidden;color:#fff;font-size:14px;box-shadow:0 8px 28px -6px rgba(0,0,0,.45);animation:qa-fade .18s ease;">
-      <style>dialog#ede-quick-appearance input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:4px;background:linear-gradient(to right,var(--qa-accent) 0%,var(--qa-accent) 50%,#444 50%,#444 100%);}dialog#ede-quick-appearance input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid var(--qa-accent);box-shadow:0 2px 4px rgba(0,0,0,.4);}#ede-quick-appearance .qa-row{display:flex;align-items:center;gap:12px;}#ede-quick-appearance .qa-label{width:56px;font-size:12px;opacity:.85;display:flex;align-items:center;gap:4px;}#ede-quick-appearance .qa-value{min-width:54px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:#00d2ff;background:rgba(255,255,255,.08);padding:4px 8px;border-radius:8px;}#ede-quick-appearance .qa-body{padding:18px 20px;display:flex;flex-direction:column;gap:18px;}#ede-quick-appearance .qa-head{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid rgba(255,255,255,.07);}#ede-quick-appearance .qa-actions{display:flex;gap:6px;}#ede-quick-appearance .qa-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#fff;cursor:pointer;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;transition:.2s;}#ede-quick-appearance .qa-btn:hover{background:rgba(255,255,255,.18);}#ede-quick-appearance .qa-btn:active{transform:scale(.9);}#ede-quick-appearance .qa-foot{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-top:1px solid rgba(255,255,255,.07);font-size:11px;opacity:.65;}@keyframes qa-fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}</style>
+    const font=StorageManager.get('danmakuFontSize', isMobile?fontSizeMobile:fontSizeDesktop);
+    const opacity=StorageManager.get('danmakuTransparencyLevel', '100');
+    const speed=StorageManager.get('danmakuSpeed', '200');
+    const timeline=(StorageManager.get('danmakuTimelineEnabled', 'true')!=='false');
+    const timelineOp=StorageManager.get('edeTimelineOpacity', '85');
+    const heatmapOp=StorageManager.get('edeHeatmapOpacity', '80');
+    dialog.innerHTML=`<div class='qa-shell ede-unified-shell' style="--qa-accent:#00a4dc;display:flex;flex-direction:column;min-width:460px;max-width:520px;background:linear-gradient(135deg,rgba(32,32,36,.94),rgba(18,18,20,.94));backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:18px;overflow:hidden;color:#fff;font-size:14px;box-shadow:0 8px 28px -6px rgba(0,0,0,.45);animation:qa-fade .18s ease;">
+      <style>dialog#ede-quick-appearance input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:4px;background:linear-gradient(to right,var(--qa-accent) 0%,var(--qa-accent) 50%,#444 50%,#444 100%);}dialog#ede-quick-appearance input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid var(--qa-accent);box-shadow:0 2px 4px rgba(0,0,0,.4);}#ede-quick-appearance .qa-row{display:flex;align-items:center;gap:12px;}#ede-quick-appearance .qa-label{width:70px;font-size:12px;opacity:.85;display:flex;align-items:center;gap:4px;}#ede-quick-appearance .qa-value{min-width:50px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:#00d2ff;background:rgba(255,255,255,.08);padding:4px 8px;border-radius:8px;}#ede-quick-appearance .qa-body{padding:18px 20px;display:flex;flex-direction:column;gap:14px;}#ede-quick-appearance .qa-head{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid rgba(255,255,255,.07);}#ede-quick-appearance .qa-actions{display:flex;gap:6px;}#ede-quick-appearance .qa-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#fff;cursor:pointer;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;transition:.2s;}#ede-quick-appearance .qa-btn:hover{background:rgba(255,255,255,.18);}#ede-quick-appearance .qa-btn:active{transform:scale(.9);}#ede-quick-appearance .qa-foot{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-top:1px solid rgba(255,255,255,.07);font-size:11px;opacity:.65;}#ede-quick-appearance .qa-section{background:rgba(255,255,255,.04);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}#ede-quick-appearance .qa-section-title{font-size:11px;opacity:.6;display:flex;align-items:center;gap:6px;margin-bottom:2px;}@keyframes qa-fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}</style>
       <div class='qa-head'>
         <strong style='font-size:15px;display:flex;align-items:center;gap:8px;'>外观快速设置<span style="padding:2px 6px;font-size:11px;background:#00a4dc22;color:#00c8ff;border-radius:4px;">实时</span></strong>
         <div class='qa-actions'>
@@ -117,41 +147,38 @@
         </div>
       </div>
       <div class='qa-body'>
-        <div class='qa-row'>
-          <span class='qa-label'>字体</span>
-          <input type='range' id='qaFont' min='12' max='48' step='1' value='${font}'>
-          <span class='qa-value'><span id='qaFontNum'>${font}</span>px</span>
+        <div class='qa-section'>
+          <div class='qa-section-title'><span class='md-icon' style='font-size:14px;'>text_fields</span>弹幕外观</div>
+          <div class='qa-row'><span class='qa-label'>字体大小</span><input type='range' id='qaFont' min='12' max='48' step='1' value='${font}'><span class='qa-value'><span id='qaFontNum'>${font}</span>px</span></div>
+          <div class='qa-row'><span class='qa-label'>弹幕不透明</span><input type='range' id='qaOpacity' min='0' max='100' step='1' value='${opacity}'><span class='qa-value'><span id='qaOpacityNum'>${opacity}</span>%</span></div>
+          <div class='qa-row'><span class='qa-label'>滚动速度</span><input type='range' id='qaSpeed' min='60' max='300' step='5' value='${speed}'><span class='qa-value'><span id='qaSpeedNum'>${speed}</span></span></div>
         </div>
-        <div class='qa-row'>
-          <span class='qa-label'>不透明</span>
-          <input type='range' id='qaOpacity' min='0' max='100' step='1' value='${opacity}'>
-            <span class='qa-value'><span id='qaOpacityNum'>${opacity}</span>%</span>
+        <div class='qa-section'>
+          <div class='qa-section-title'><span class='md-icon' style='font-size:14px;'>${heatmap_icon}</span>热度图设置</div>
+          <label style='display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;'><input type='checkbox' id='qaTimeline' ${timeline?'checked':''} style='margin:0;'> 启用热度轨迹</label>
+          <div class='qa-row'><span class='qa-label'>轨迹透明度</span><input type='range' id='qaTimelineOp' min='10' max='100' step='1' value='${timelineOp}'><span class='qa-value'><span id='qaTimelineOpNum'>${timelineOp}</span>%</span></div>
+          <div class='qa-row'><span class='qa-label'>热度图透明</span><input type='range' id='qaHeatmapOp' min='10' max='100' step='5' value='${heatmapOp}'><span class='qa-value'><span id='qaHeatmapOpNum'>${heatmapOp}</span>%</span></div>
+          <div style='display:flex;gap:8px;margin-top:4px;'><button id='qaShowHeatmap' style='flex:1;background:rgba(0,164,220,.15);border:1px solid rgba(0,164,220,.3);color:#00c8ff;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px;'><span class='md-icon' style='font-size:16px;'>${heatmap_icon}</span>打开热度图</button></div>
         </div>
-        <div class='qa-row'>
-          <span class='qa-label'>速度</span>
-          <input type='range' id='qaSpeed' min='60' max='300' step='5' value='${speed}'>
-          <span class='qa-value'><span id='qaSpeedNum'>${speed}</span></span>
-        </div>
-        <label style='display:flex;align-items:center;gap:8px;font-size:12px;background:rgba(255,255,255,.06);padding:10px 12px;border-radius:12px;cursor:pointer;'>
-          <input type='checkbox' id='qaTimeline' ${timeline?'checked':''} style='margin:0;'> 启用热度轨迹
-        </label>
       </div>
-      <div class='qa-foot'>值即时保存；速度越大滚动越快<div style='display:flex;gap:8px;'></div></div>
+      <div class='qa-foot'>所有设置即时生效并自动保存</div>
     </div>`;
     document.body.appendChild(dialog); dialog.showModal();
-    // 独立的渐变填充函数避免依赖中心函数
-    function paintRange(r){ if(!r) return; const min=r.min||0,max=r.max||100,val=r.value; const pct=((val-min)/(max-min))*100; r.style.background=`linear-gradient(to right, var(--qa-accent) 0%, var(--qa-accent) ${pct}%, #444 ${pct}%, #444 100%)`; }
-    const bind=(id,key,cb)=>{ const el=dialog.querySelector('#'+id); const num=dialog.querySelector('#'+id+'Num'); paintRange(el); el.addEventListener('input',e=>{ const v=e.target.value; localStorage.setItem(key,v); if(num) num.textContent=v; if(cb) cb(v); paintRange(e.target); }); };
-    bind('qaFont','danmakuFontSize',()=>reloadDanmaku('reload'));
-    bind('qaOpacity','danmakuTransparencyLevel',v=>{ globalOpacity=v/100; });
-    bind('qaSpeed','danmakuSpeed',v=>{ if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
+    const bindSlider=(id,key,cb)=>{ const el=dialog.querySelector('#'+id); const num=dialog.querySelector('#'+id+'Num'); paintRangeInput(el); el.addEventListener('input',e=>{ const v=e.target.value; localStorage.setItem(key,v); if(num) num.textContent=v; if(cb) cb(v); paintRangeInput(e.target); }); };
+    bindSlider('qaFont','danmakuFontSize',()=>reloadDanmaku('reload'));
+    bindSlider('qaOpacity','danmakuTransparencyLevel',v=>{ globalOpacity=v/100; });
+    bindSlider('qaSpeed','danmakuSpeed',v=>{ if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
+    bindSlider('qaTimelineOp','edeTimelineOpacity',v=>{ document.documentElement.style.setProperty('--ede-pbp-unplayed-op', (v/100).toFixed(2)); });
+    bindSlider('qaHeatmapOp','edeHeatmapOpacity',v=>{ document.documentElement.style.setProperty('--ede-heatmap-opacity', (v/100).toFixed(2)); });
     const tl=dialog.querySelector('#qaTimeline'); tl.onchange=e=>{ localStorage.setItem('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
+    dialog.querySelector('#qaShowHeatmap').onclick=()=>{ dialog.remove(); showHeatmapDialog(); };
     dialog.querySelector('#qaClose').onclick=()=>dialog.remove();
-    dialog.querySelector('#qaReset').onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; ['qaFont','qaOpacity','qaSpeed'].forEach(id=>{ const el=dialog.querySelector('#'+id); if(id==='qaFont') el.value=defF; else if(id==='qaOpacity') el.value=100; else if(id==='qaSpeed') el.value=200; el.dispatchEvent(new Event('input')); }); tl.checked=true; tl.dispatchEvent(new Event('change')); };
+    dialog.querySelector('#qaReset').onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; const defs={qaFont:defF,qaOpacity:100,qaSpeed:200,qaTimelineOp:85,qaHeatmapOp:80}; Object.entries(defs).forEach(([id,val])=>{ const el=dialog.querySelector('#'+id); if(el){ el.value=val; el.dispatchEvent(new Event('input')); } }); tl.checked=true; tl.dispatchEvent(new Event('change')); };
   }
   window.showQuickAppearanceDialog = showQuickAppearanceDialog;
   const settingsButtonOpts = { title:'弹幕设置 (外观快捷)', id:'danmakuSettings', innerText:settings_icon, onclick:()=>showQuickAppearanceDialog() };
   const heatmapButtonOpts = { title:'实时热度图 (Alt+H)', id:'danmakuHeatmap', innerText:heatmap_icon, onclick:()=>showHeatmapDialog() };
+  const listButtonOpts = { title:'弹幕列表', id:'danmakuList', innerText:list_icon, onclick:()=>showDanmakuListDialog() };
   const centerButtonOpts = { title:'弹幕中心', id:'danmakuCenter', innerText:center_icon, onclick:()=>showDanmakuCenterDialog() };
 
   // ------ configs end------
@@ -162,37 +189,41 @@
 
   class EDE {
     constructor() {
-      this.chConvert = localStorage.getItem('chConvert') || 1;
-  this.danmakuSwitch = localStorage.getItem('danmakuSwitch') ? parseInt(localStorage.getItem('danmakuSwitch')) : 0;
+      this.chConvert = StorageManager.get('chConvert', 1);
+      this.danmakuSwitch = StorageManager.get('danmakuSwitch', 0);
       this.danmaku = null;
       this.episode_info = null;
       this.ob = null;
       this.loading = false;
-      this.showDanmakuInfo = localStorage.getItem('showDanmakuInfo') === null ? true : localStorage.getItem('showDanmakuInfo') === 'true';
+      this.showDanmakuInfo = StorageManager.get('showDanmakuInfo', true);
       this.originalCount = 0;
       this.lastError = null;
       this.corsStatus = '未测试';
       this.autoMatchStatus = '未开始';
       this.lastApiResponse = null;
-      this.filterWords = localStorage.getItem('danmakuFilterWords') ? JSON.parse(localStorage.getItem('danmakuFilterWords')) : [];
-      this.cacheEnabled = localStorage.getItem('danmakuCacheEnabled') !== 'false';
-  this.buttonOrder = localStorage.getItem('danmakuButtonOrder') ? JSON.parse(localStorage.getItem('danmakuButtonOrder')) : ['displayDanmaku','filteringDanmaku','danmakuSettings','switchDanmakuInfo','searchDanmaku','showDanmakuLog'];
-  // 迁移: 移除已废弃 filterSettings
-  this.buttonOrder = this.buttonOrder.filter(x=>x!=='filterSettings');
-  // 自动把新按钮加入顺序（若不存在）
-  if(!this.buttonOrder.includes('danmakuHeatmap')){ this.buttonOrder.push('danmakuHeatmap'); localStorage.setItem('danmakuButtonOrder', JSON.stringify(this.buttonOrder)); }
-  this.compactUI = localStorage.getItem('danmakuCompactUI') === 'true';
-  // 外显按钮（除 display / center 外，其余通过中心二级菜单访问）
-  try { this.externalButtons = JSON.parse(localStorage.getItem('danmakuExternalButtons')||'["filteringDanmaku","danmakuSettings","searchDanmaku"]'); } catch{ this.externalButtons=["filteringDanmaku","danmakuSettings","searchDanmaku"]; }
-  this.externalButtons = this.externalButtons.filter(x=>x!=='filterSettings');
-      this.currentProxyIndex = 0;
-      this.customProxyServer = localStorage.getItem('danmakuCustomProxy') || '';
-      const savedProxyIndex = localStorage.getItem('danmakuProxyIndex');
-      if (savedProxyIndex !== null) this.currentProxyIndex = parseInt(savedProxyIndex);
+      this.filterWords = StorageManager.get('danmakuFilterWords', []);
+      this.cacheEnabled = StorageManager.get('danmakuCacheEnabled', true);
+      this.buttonOrder = StorageManager.get('danmakuButtonOrder', ['displayDanmaku','filteringDanmaku','danmakuSettings','switchDanmakuInfo','searchDanmaku','showDanmakuLog']);
+      // 迁移: 移除已废弃按钮
+      this.buttonOrder = this.buttonOrder.filter(x=>x!=='filterSettings');
+      // 自动把新按钮加入顺序（若不存在）
+      const addIfMissing = (btn, before) => {
+        if(!this.buttonOrder.includes(btn)){
+          const idx = before ? this.buttonOrder.indexOf(before) : -1;
+          if(idx>=0) this.buttonOrder.splice(idx, 0, btn);
+          else this.buttonOrder.push(btn);
+          StorageManager.set('danmakuButtonOrder', this.buttonOrder);
+        }
+      };
+      addIfMissing('danmakuHeatmap');
+      addIfMissing('danmakuList', 'danmakuCenter');
+      this.compactUI = StorageManager.get('danmakuCompactUI', false);
+      this.externalButtons = StorageManager.get('danmakuExternalButtons', ['filteringDanmaku','danmakuSettings','searchDanmaku']);
+      this.externalButtons = this.externalButtons.filter(x=>x!=='filterSettings');
+      this.currentProxyIndex = StorageManager.get('danmakuProxyIndex', 0);
+      this.customProxyServer = StorageManager.get('danmakuCustomProxy', '');
     }
   }
-
-  // removed unused createRangeSlider (UI 已重构不再调用)
 
   function createButton(opt) { const button = document.createElement('button', buttonOptions); button.setAttribute('title', opt.title); button.setAttribute('id', opt.id); const icon = document.createElement('span'); icon.className = 'md-icon'; icon.innerText = opt.innerText; button.appendChild(icon); button.onclick = opt.onclick; return button; }
   // 统一对话框样式工具
@@ -237,8 +268,8 @@
   if (document.getElementById('danmakuCtr')) document.getElementById('danmakuCtr').remove();
   ensureToolbarStyles();
     let parent = uiAnchor[TargetIndex].parentNode.parentNode.parentNode; let menubar=document.createElement('div'); menubar.id='danmakuCtr'; menubar.className=menubarOptions.class; if(!window.ede.episode_info) menubar.style.opacity=0.5; parent.append(menubar);
-  const buttonConfigs = { displayDanmaku:{...displayButtonOpts,label:'弹幕开关'}, filteringDanmaku:{...filterButtonOpts,label:'过滤等级'}, danmakuSettings:{...settingsButtonOpts,label:'弹幕设置'}, switchDanmakuInfo:{...infoSwitchButtonOpts,label:'信息显示'}, searchDanmaku:{...searchButtonOpts,label:'搜索弹幕'}, showDanmakuLog:{...logButtonOpts,label:'调试日志'}, danmakuHeatmap:{...heatmapButtonOpts,label:'热度图'}, danmakuCenter:{...centerButtonOpts,label:'弹幕中心'} };
-  const addBtn=(id)=>{ const cfg=buttonConfigs[id]; if(!cfg) return; if(id==='displayDanmaku') cfg.innerText = danmaku_icons[window.ede.danmakuSwitch]; else if(id==='switchDanmakuInfo') cfg.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0]; else if(id==='filteringDanmaku'){ const lv=parseInt(localStorage.getItem('danmakuFilterLevel')||0); cfg.innerText = filter_icons[lv]; } menubar.appendChild(createButton(cfg)); };
+  const buttonConfigs = { displayDanmaku:{...displayButtonOpts,label:'弹幕开关'}, filteringDanmaku:{...filterButtonOpts,label:'过滤等级'}, danmakuSettings:{...settingsButtonOpts,label:'弹幕设置'}, switchDanmakuInfo:{...infoSwitchButtonOpts,label:'信息显示'}, searchDanmaku:{...searchButtonOpts,label:'搜索弹幕'}, showDanmakuLog:{...logButtonOpts,label:'调试日志'}, danmakuHeatmap:{...heatmapButtonOpts,label:'热度图'}, danmakuList:{...listButtonOpts,label:'弹幕列表'}, danmakuCenter:{...centerButtonOpts,label:'弹幕中心'} };
+  const addBtn=(id)=>{ const cfg=buttonConfigs[id]; if(!cfg) return; if(id==='displayDanmaku') cfg.innerText = danmaku_icons[window.ede.danmakuSwitch]; else if(id==='switchDanmakuInfo') cfg.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0]; else if(id==='filteringDanmaku'){ const lv=parseInt(StorageManager.get('danmakuFilterLevel', 0)||0); cfg.innerText = filter_icons[lv]; } menubar.appendChild(createButton(cfg)); };
   if(window.ede.compactUI){ addBtn('displayDanmaku'); addBtn('danmakuCenter'); }
   else {
     // 外显顺序: 以 buttonOrder 为基准筛选 externalButtons
@@ -249,6 +280,44 @@
     // 末尾添加中心入口
     addBtn('danmakuCenter');
   }
+  }
+
+  // 重建工具栏（用于布局设置中实时更新）
+  function rebuildToolbar(){
+    const bar = document.getElementById('danmakuCtr');
+    if(!bar) return;
+    const parent = bar.parentNode;
+    bar.remove();
+    // 直接在原位置重建，不依赖锚点查找
+    ensureToolbarStyles();
+    const menubar = document.createElement('div');
+    menubar.id = 'danmakuCtr';
+    menubar.className = menubarOptions.class;
+    if(!window.ede.episode_info) menubar.style.opacity = 0.5;
+    
+    const buttonConfigs = { displayDanmaku:{...displayButtonOpts,label:'弹幕开关'}, filteringDanmaku:{...filterButtonOpts,label:'过滤等级'}, danmakuSettings:{...settingsButtonOpts,label:'弹幕设置'}, switchDanmakuInfo:{...infoSwitchButtonOpts,label:'信息显示'}, searchDanmaku:{...searchButtonOpts,label:'搜索弹幕'}, showDanmakuLog:{...logButtonOpts,label:'调试日志'}, danmakuHeatmap:{...heatmapButtonOpts,label:'热度图'}, danmakuList:{...listButtonOpts,label:'弹幕列表'}, danmakuCenter:{...centerButtonOpts,label:'弹幕中心'} };
+    const addBtn = (id) => {
+      const cfg = buttonConfigs[id];
+      if(!cfg) return;
+      if(id === 'displayDanmaku') cfg.innerText = danmaku_icons[window.ede.danmakuSwitch];
+      else if(id === 'switchDanmakuInfo') cfg.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0];
+      else if(id === 'filteringDanmaku') cfg.innerText = filter_icons[parseInt(StorageManager.get('danmakuFilterLevel', 0)||0)];
+      menubar.appendChild(createButton(cfg));
+    };
+    
+    if(window.ede.compactUI){
+      addBtn('displayDanmaku');
+      addBtn('danmakuCenter');
+    } else {
+      const externalSet = new Set(window.ede.externalButtons || []);
+      window.ede.buttonOrder.forEach(id => {
+        if(id === 'displayDanmaku' || id === 'danmakuCenter') return;
+        if(externalSet.has(id)) addBtn(id);
+      });
+      menubar.insertBefore(createButton({ ...buttonConfigs['displayDanmaku'], innerText: danmaku_icons[window.ede.danmakuSwitch] }), menubar.firstChild);
+      addBtn('danmakuCenter');
+    }
+    parent.appendChild(menubar);
   }
 
   function sendNotification(title, msg) { const Notification = window.Notification || window.webkitNotifications; console.log(msg); if (Notification && Notification.permission === 'granted') { return new Notification(title,{body:msg}); } else if(Notification){ Notification.requestPermission(p=>{ if(p==='granted') new Notification(title,{body:msg}); }); } }
@@ -272,10 +341,21 @@
 
       // 单独记录季信息，避免直接把“第5季 / S5”等写进搜索关键字导致被当作集数
       let seasonNumber = 1;
+      let episodeMetadata = {};
       if (item.Type === 'Episode') {
         seasonNumber = item.ParentIndexNumber || 1;
+        episodeMetadata = {
+          seasonNumber,
+          episodeNumber: episode,
+          premiereDate: item.PremiereDate,
+          seriesName: item.SeriesName,
+          parentName: item.ParentName,
+          seasonId: item.SeasonId,
+          seriesId: item.SeriesId
+        };
       }
       window.ede._seasonNumber = seasonNumber;
+      window.ede._episodeMetadata = episodeMetadata;
 
       // 旧逻辑：将非第1季的 ParentIndexNumber 直接拼到番名后面，导致“鬼灭之刃 第5季 (S5)”→“鬼灭之刃 5”
       // if(item.Type=='Episode' && item.ParentIndexNumber!=1) animeName += ' ' + item.ParentIndexNumber;
@@ -292,17 +372,8 @@
       if(is_auto && localStorage.getItem(_episode_key)) return JSON.parse(localStorage.getItem(_episode_key));
       if(!is_auto){ await showSearchDialog(); return null; }
 
-      const now=Date.now();
-      const searchKey=`_search_lock_${_id}`;
-      const lastSearch=localStorage.getItem(searchKey);
-      if(lastSearch){
-        const data=JSON.parse(lastSearch);
-        if(now-data.timestamp < 60000){
-          console.log('搜索冷却中，跳过自动匹配');
-          return null;
-        }
-      }
-      localStorage.setItem(searchKey, JSON.stringify({timestamp:now}));
+      // 移除搜索冷却限制，因为已有缓存机制保护
+      // 用户需要快速切换集数时不应被60秒冷却阻止
 
       let searchResult = await trySearch(animeName);
       if(!searchResult && originalTitle && originalTitle!==animeName){
@@ -327,34 +398,92 @@
     if(!animaInfo || !animaInfo.animes || animaInfo.animes.length===0) return null;
 
     const seasonNumber = window.ede._seasonNumber || 1;
+    const metadata = window.ede._episodeMetadata || {};
 
-    function titleMatchSeason(title, season) {
-      if (!title) return season === 1; // 没写季就默认当第1季
-      const s = String(season);
-      const patterns = [
-        new RegExp(`第\s*${s}\s*季`),
-        new RegExp(`S\s*${s}[^0-9]?`, 'i'),
-        new RegExp(`Season\s*${s}[^0-9]?`, 'i'),
-      ];
-      return patterns.some(r => r.test(title));
+    // 辅助函数：判断是否为正片（过滤 Opening/Ending/PV/SP 等特殊集）
+    function isMainEpisode(ep) {
+      const title = ep.episodeTitle || '';
+      // 排除常见特殊集标识
+      if(/^(OP|ED|PV|CM|SP|Opening|Ending|Preview|Trailer|NC|NCOP|NCED)/i.test(title)) return false;
+      if(/^C\d+\s*(Opening|Ending|OP|ED)/i.test(title)) return false; // C1 Opening, C2 Ending
+      if(/(放送直前|AnimeJapan|特番|番宣|宣传|先行|予告)/i.test(title)) return false;
+      if(/^\d+分/.test(title)) return false; // 4分S2放送直前 等
+      return true;
     }
 
-    // 优先选择标题明确写了对应季数的条目，否则退回第一个
-    let selectedAnime =
-      animaInfo.animes.find(a => titleMatchSeason(a.animeTitle, seasonNumber)) ||
-      animaInfo.animes[0];
+    // 计算一季的正片集数（排除特殊集）
+    function countMainEpisodes(anime) {
+      return (anime.episodes || []).filter(isMainEpisode).length;
+    }
 
+    let selectedAnime;
     let selectedEpisode;
+    
     if(episode==='movie') {
+      selectedAnime = animaInfo.animes[0];
       selectedEpisode = selectedAnime.episodes[0];
     } else {
       const epIndex = parseInt(episode, 10);
-      selectedEpisode = selectedAnime.episodes.find(ep=>{
-        const m = ep.episodeTitle && ep.episodeTitle.match(/\d+/);
+      
+      // 🔥 核心改进：主动跨季检测（只计算正片集数，排除特殊集）
+      
+      let cumulativeEpisodes = 0;
+      let targetSeasonIndex = 0;
+      let episodeInSeason = epIndex;
+      let foundMatch = false;
+      
+      if(animaInfo.animes.length > 1) {
+        // 多季情况：计算 epIndex 落在哪一季（只计算正片）
+        for(let i = 0; i < animaInfo.animes.length; i++) {
+          const mainEpisodeCount = countMainEpisodes(animaInfo.animes[i]);
+          
+          if(epIndex <= cumulativeEpisodes + mainEpisodeCount) {
+            // 找到了！epIndex 属于第 i+1 季
+            targetSeasonIndex = i;
+            episodeInSeason = epIndex - cumulativeEpisodes;
+            foundMatch = true;
+            console.log(`🎯 跨季检测: Emby E${epIndex} -> 第${i+1}季 第${episodeInSeason}集 (前${i}季共${cumulativeEpisodes}集正片)`);
+            break;
+          }
+          
+          cumulativeEpisodes += mainEpisodeCount;
+        }
+        
+        // 如果超出所有季的正片总集数，使用最后一季
+        if(!foundMatch && epIndex > cumulativeEpisodes) {
+          targetSeasonIndex = animaInfo.animes.length - 1;
+          const lastSeasonMainCount = countMainEpisodes(animaInfo.animes[targetSeasonIndex]);
+          episodeInSeason = epIndex - cumulativeEpisodes + lastSeasonMainCount;
+          console.warn(`⚠️ 集数超出范围: E${epIndex} > 总正片${cumulativeEpisodes}集，使用最后一季第${episodeInSeason}集`);
+        }
+      }
+      
+      selectedAnime = animaInfo.animes[targetSeasonIndex];
+      
+      // 获取该季的正片列表
+      const mainEpisodes = selectedAnime.episodes.filter(isMainEpisode);
+      
+      // 在选定的季中匹配集数
+      // 策略1: 标题数字精确匹配（匹配「第X话」「第X集」等）
+      selectedEpisode = mainEpisodes.find(ep=>{
+        if(!ep.episodeTitle) return false;
+        const m = ep.episodeTitle.match(/第?(\d+)[话集話]/);
         if(!m) return false;
-        const epNum=parseInt(m[0],10);
-        return epNum===epIndex;
-      }) || selectedAnime.episodes[epIndex-1];
+        const epNum = parseInt(m[1], 10);
+        return epNum === episodeInSeason;
+      });
+      
+      // 策略2: 索引匹配（在正片列表中使用 episodeInSeason-1）
+      if(!selectedEpisode && episodeInSeason > 0 && episodeInSeason <= mainEpisodes.length) {
+        selectedEpisode = mainEpisodes[episodeInSeason - 1];
+        console.log(`📍 索引匹配: 第${targetSeasonIndex+1}季 正片第${episodeInSeason}集`);
+      }
+      
+      // 策略3: 回退到全部集数列表（包含特殊集）
+      if(!selectedEpisode && episodeInSeason > 0 && episodeInSeason <= selectedAnime.episodes.length) {
+        selectedEpisode = selectedAnime.episodes[episodeInSeason - 1];
+        console.log(`🔄 回退匹配: 第${targetSeasonIndex+1}季 索引${episodeInSeason-1}（含特殊集）`);
+      }
     }
 
     if(!selectedEpisode) return null;
@@ -444,9 +573,9 @@
     if(!window.ede._filterResourcesReady) compileFilterResources();
   // 新视频/新弹幕源时重置已观看段状态，避免沿用上一视频的蓝色覆盖
   window.ede._watchedSegments=[]; window.ede._lastSegmentUpdateTime=0; // 其余相关变量由逻辑按需再建
-  window.ede.parsedComments = danmakuParser(comments); const filtered = applyAllFilters(window.ede.parsedComments); const container=getActiveContainer(); if(!container) return; globalOpacity = parseInt(localStorage.getItem('danmakuTransparencyLevel')||100)/100; const savedSpeed = parseInt(localStorage.getItem('danmakuSpeed')) || 200; window.ede.danmaku = new Danmaku({ container, media:videoElement, comments:filtered, engine:'canvas', speed: savedSpeed }); window.ede.filteredComments = filtered;
+  window.ede.parsedComments = danmakuParser(comments); const filtered = applyAllFilters(window.ede.parsedComments); const container=getActiveContainer(); if(!container) return; globalOpacity = parseInt(StorageManager.get('danmakuTransparencyLevel', 100))/100; const savedSpeed = parseInt(StorageManager.get('danmakuSpeed', 200)); window.ede.danmaku = new Danmaku({ container, media:videoElement, comments:filtered, engine:'canvas', speed: savedSpeed }); window.ede.filteredComments = filtered;
     // 构建秒级索引供动态密度监控使用
-    (function buildSecondIndex(){ try { if(!filtered.length){ window.ede._countsBySecond=null; return; } const dur = Math.max(videoElement.duration||0, filtered[filtered.length-1].time|0)+2; const arr=new Array(Math.ceil(dur)+1).fill(0); for(const c of filtered){ const si = c.time|0; if(si>=0 && si<arr.length) arr[si]++; } window.ede._countsBySecond = arr; } catch(e){ window.ede._countsBySecond=null; } })();
+    buildSecondIndex(filtered, videoElement);
     appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); if(window.ede.ob) window.ede.ob.disconnect(); window.ede.ob = new ResizeObserver(()=>{ if(window.ede.danmaku){ window.ede.danmaku.resize(); renderDanmakuTimeline(true); } }); window.ede.ob.observe(container); startDynamicDensityMonitor(); buildDanmakuDensityData(); renderDanmakuTimeline(); attachTimelineMediaEvents(); }
 
   // 新核心重载 + 防抖 (阶段1)
@@ -481,32 +610,40 @@
   const debouncedCore = debounce((type)=>coreReloadDanmaku(type),300);
   function reloadDanmaku(type='check', immediate=false){ if(immediate){ debouncedCore.cancel(); coreReloadDanmaku(type); } else { debouncedCore(type); } }
 
-  function danmakuFilter(comments){ // 保留旧接口兼容
-    return applyAllFilters(comments);
-  }
-
   // 统一过滤主入口（单次拷贝 + 早期退出）；保持旧子函数以便复用
   function applyAllFilters(base){
     if(!base||!base.length) return [];
-    // 预取配置
-    const typeFilters = localStorage.getItem('danmakuTypeFilter') ? JSON.parse(localStorage.getItem('danmakuTypeFilter')):[];
-    const level = parseInt(localStorage.getItem('danmakuFilterLevel')||0);
+    // 预取配置（使用缓存）
+    const typeFilters = StorageManager.get('danmakuTypeFilter', []);
+    const sourceFiltersArr = StorageManager.get('danmakuSourceFilter', []);
+    const blockedUsers = StorageManager.get('danmakuBlockedUsers', []);
+    const level = parseInt(StorageManager.get('danmakuFilterLevel', 0) || 0);
     const hasType = typeFilters.length>0;
+    const sourceFiltersSet = sourceFiltersArr.length ? new Set(sourceFiltersArr) : null; // 使用Set加速检测
+    const hasSource = !!sourceFiltersSet;
+    const hasBlocked = blockedUsers.length>0;
     const wordSet = window.ede._filterWordSet;
     const wordRe = window.ede._filterWordRegex;
     const filterEmoji = hasType && typeFilters.includes(danmakuTypeFilterOpts.emoji.id);
     const filterOnlyWhite = hasType && typeFilters.includes(danmakuTypeFilterOpts.onlyWhite.id);
     const filterRolling = hasType && typeFilters.includes(danmakuTypeFilterOpts.rolling.id);
+    const filterLtr = hasType && typeFilters.includes(danmakuTypeFilterOpts.ltr.id);
     let whitelistModes = null; // modes to KEEP (if specific type filters selected besides special flags)
     if(hasType){
       const residual = typeFilters.filter(f=>!['emoji','onlyWhite','rolling'].includes(f));
       if(residual.length) whitelistModes = new Set(['top','bottom','ltr','rtl'].filter(m=> !residual.includes(m))); // Actually we filter OUT listed basic modes, so compute complement
     }
     const emojiRe = filterEmoji ? (window.ede._emojiRegex || (/x^/)) : null;
+    // 构建用户屏蔽集合（key: source+userId）
+    const blockedUserSet = hasBlocked ? new Set(blockedUsers.map(b => `${b.source}|${b.userId}`)) : null;
     const out=[];
     // 关键词与类型第一阶段过滤（不含密度）
   for(const c of base){
       if(!c) continue;
+      // 用户屏蔽过滤
+      if(blockedUserSet && c.userId && blockedUserSet.has(`${c.source}|${c.userId}`)) continue;
+      // 来源平台过滤（使用 Set.has 替代 Array.includes）
+      if(sourceFiltersSet && c.source && sourceFiltersSet.has(c.source)) continue;
       // 类型过滤
       if(hasType){
         if(filterOnlyWhite && c.style && c.style.color && !c.style.color.toLowerCase().startsWith('#ffffff')){
@@ -514,17 +651,26 @@
           continue;
         }
         if(filterRolling && (c.mode==='ltr' || c.mode==='rtl')) continue;
+        if(filterLtr && c.mode==='ltr') continue;
         if(whitelistModes && !whitelistModes.has(c.mode)) continue; // mode 被排除
         if(emojiRe && emojiRe.test(c.text)) continue;
       }
+      // 关键词过滤（普通+正则）
+      let keywordBlocked = false;
       if(wordSet && wordSet.size){
         const lower = c._lc || c.text.toLowerCase();
-        if(wordRe && wordRe.test(lower)) continue;
-        let blocked = false;
-        // 逐个匹配（少量关键词情况下可接受）
-        for(const w of wordSet){ if(lower.includes(w)){ blocked=true; break; } }
-        if(blocked) continue;
+        if(wordRe && wordRe.test(lower)) keywordBlocked = true;
+        if(!keywordBlocked){
+          for(const w of wordSet){ if(lower.includes(w)){ keywordBlocked=true; break; } }
+        }
       }
+      // 正则表达式过滤
+      if(!keywordBlocked && window.ede._filterRegexList && window.ede._filterRegexList.length){
+        for(const re of window.ede._filterRegexList){
+          if(re.test(c.text)){ keywordBlocked=true; break; }
+        }
+      }
+      if(keywordBlocked) continue;
       out.push(c);
     }
     if(level===0) return out;
@@ -533,13 +679,36 @@
   }
   // 编译过滤资源（关键词集合 / 正则 / emoji 正则）
   function compileFilterResources(){ try {
-      if(!window.ede.filterWords){ try { window.ede.filterWords = JSON.parse(localStorage.getItem('danmakuFilterWords')||'[]'); } catch{ window.ede.filterWords=[]; } }
-      const words = (window.ede.filterWords||[]).map(w=> (w||'').toString().trim().toLowerCase()).filter(Boolean);
-      window.ede._filterWordSet = new Set(words);
+      if(!window.ede.filterWords){ try { window.ede.filterWords = StorageManager.get('danmakuFilterWords', []); } catch{ window.ede.filterWords=[]; } }
+      const rawWords = (window.ede.filterWords||[]).map(w=> (w||'').toString().trim()).filter(Boolean);
+      
+      // 分离普通关键词和正则表达式
+      const plainWords = [];
+      const regexPatterns = [];
+      for(const w of rawWords){
+        // 检测正则格式: /pattern/flags
+        const regexMatch = w.match(/^\/(.+)\/([gimsuy]*)$/);
+        if(regexMatch){
+          try {
+            const re = new RegExp(regexMatch[1], regexMatch[2] || 'i');
+            regexPatterns.push(re);
+          } catch(e){ 
+            // 无效正则，当作普通关键词
+            plainWords.push(w.toLowerCase()); 
+          }
+        } else {
+          plainWords.push(w.toLowerCase());
+        }
+      }
+      
+      window.ede._filterWordSet = new Set(plainWords);
+      window.ede._filterRegexList = regexPatterns;
+      
       // 构造简单安全正则（限制长度与字符范围以避免 ReDoS）
       const safeParts = [];
       for(const w of window.ede._filterWordSet){ if(w.length<=30 && /[a-z0-9\u4e00-\u9fa5]/i.test(w)) safeParts.push(w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')); }
       window.ede._filterWordRegex = safeParts.length? new RegExp('(' + safeParts.join('|') + ')','i'): null;
+      
       // Emoji 正则（支持属性的现代浏览器），失败则退回到基本区段范围
       if(!window.ede._emojiRegex){
         try { window.ede._emojiRegex = /[\p{Extended_Pictographic}]/u; if(!window.ede._emojiRegex.test('😀')) throw new Error('emoji test failed'); }
@@ -548,34 +717,30 @@
       window.ede._filterResourcesReady = true;
     } catch(e){ console.warn('编译过滤资源失败', e); }
   }
-  function applyTypeFilters(list){ const typeFilters= localStorage.getItem('danmakuTypeFilter') ? JSON.parse(localStorage.getItem('danmakuTypeFilter')):[]; if(!typeFilters.length) return list; let filters=[...typeFilters]; if(filters.includes(danmakuTypeFilterOpts.onlyWhite.id)){ list=list.filter(c=> c.style && c.style.color && c.style.color.toLowerCase().startsWith('#ffffff')); filters=filters.filter(f=>f!==danmakuTypeFilterOpts.onlyWhite.id); }
-    if(filters.includes(danmakuTypeFilterOpts.rolling.id)){ list=list.filter(c=> c.mode!=='ltr' && c.mode!=='rtl'); filters=filters.filter(f=>f!==danmakuTypeFilterOpts.rolling.id); }
-    if(filters.includes(danmakuTypeFilterOpts.emoji.id)){
-      if(!window.ede._emojiRegex) compileFilterResources();
-      const re=window.ede._emojiRegex;
-      if(re && re.test){ list=list.filter(c=> !re.test(c.text)); }
-      filters=filters.filter(f=>f!==danmakuTypeFilterOpts.emoji.id);
-    }
-    if(filters.length){ list=list.filter(c=> !filters.includes(c.mode)); }
-    return list; }
-  function applyKeywordFilters(list){ const set=window.ede._filterWordSet; if(!set || !set.size) return list; const re=window.ede._filterWordRegex; return list.filter(c=>{ const lower=c.text.toLowerCase(); if(re && re.test(lower)) return false; // fallback 逐个
-      for(const w of set){ if(lower.includes(w)) return false; } return true; }); }
+  // applyTypeFilters / applyKeywordFilters 已内联到 applyAllFilters，无需独立函数
   function applyDensityFilter(list){
-    let level=parseInt(localStorage.getItem('danmakuFilterLevel')||0); if(level===0) return list;
+    let level=parseInt(StorageManager.get('danmakuFilterLevel', 0)||0); if(level===0) return list;
     const limit = level===4 ? 3 : (9 - level*2);
     const vertical_limit = level===4 ? 2 : 6;
-    const secCount = Object.create(null);
-    const vertCount = Object.create(null); // 3s 窗口
+    // 使用 Uint16Array 提升数值计数性能（适用于大弹幕数据集）
+    const maxSec = list.length ? Math.ceil(list[list.length-1].time||0) + 10 : 100;
+    const secCount = new Uint16Array(maxSec);
+    const vertCount = new Uint16Array(Math.ceil(maxSec / 3) + 1); // 3s 窗口
     const out=[];
-    for(let i=0;i<list.length;i++){
+    const len = list.length;
+    for(let i=0; i<len; i++){
       const c=list[i]; const sec = Math.ceil(c.time); const vb = Math.ceil(c.time/3);
+      if(sec >= maxSec) continue; // 安全边界
       let vc = vertCount[vb]||0; if(vc < vertical_limit){ vertCount[vb]=vc+1; } else { c.mode='rtl'; }
       let sc = secCount[sec]||0; if(sc < limit){ secCount[sec]=sc+1; out.push(c); }
     }
     return out;
   }
 
-  function rebuildDanmakuFromParsed(){ if(!window.ede.parsedComments){ reloadDanmaku('reload'); return; } if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } const videoElement=getActiveVideo(); const container=getActiveContainer(); if(!videoElement || !container){ reloadDanmaku('reload'); return; } const filtered=applyAllFilters(window.ede.parsedComments); const savedSpeed = parseInt(localStorage.getItem('danmakuSpeed')) || 200; window.ede.danmaku=new Danmaku({container,media:videoElement,comments:filtered,engine:'canvas',speed:savedSpeed}); window.ede.filteredComments=filtered; (function buildSecondIndex(){ try { if(!filtered.length){ window.ede._countsBySecond=null; return; } const dur = Math.max(videoElement.duration||0, filtered[filtered.length-1].time|0)+2; const arr=new Array(Math.ceil(dur)+1).fill(0); for(const c of filtered){ const si = c.time|0; if(si>=0 && si<arr.length) arr[si]++; } window.ede._countsBySecond = arr; } catch(e){ window.ede._countsBySecond=null; } })(); appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); buildDanmakuDensityData(); renderDanmakuTimeline(); }
+  function rebuildDanmakuFromParsed(){ if(!window.ede.parsedComments){ reloadDanmaku('reload'); return; } if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } const videoElement=getActiveVideo(); const container=getActiveContainer(); if(!videoElement || !container){ reloadDanmaku('reload'); return; } const filtered=applyAllFilters(window.ede.parsedComments); const savedSpeed = parseInt(StorageManager.get('danmakuSpeed', 200)); window.ede.danmaku=new Danmaku({container,media:videoElement,comments:filtered,engine:'canvas',speed:savedSpeed}); window.ede.filteredComments=filtered; buildSecondIndex(filtered, videoElement); appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); buildDanmakuDensityData(); renderDanmakuTimeline(); }
+
+  // 抽取秒级索引构建为独立函数以便复用
+  function buildSecondIndex(filtered, videoElement){ try { if(!filtered||!filtered.length){ window.ede._countsBySecond=null; return; } const dur = Math.max(videoElement.duration||0, filtered[filtered.length-1].time|0)+2; const len = Math.ceil(dur)+1; const arr = new Uint16Array(len); for(const c of filtered){ const si = c.time|0; if(si>=0 && si<len) arr[si]++; } window.ede._countsBySecond = arr; } catch(e){ window.ede._countsBySecond=null; } }
 
   function onFilterConfigChanged(){ compileFilterResources(); // 关键词/高级过滤/等级变化
     if(window.ede.parsedComments && window.ede.danmaku){ rebuildDanmakuFromParsed(); } else { reloadDanmaku('reload'); } }
@@ -584,24 +749,61 @@
   function startDynamicDensityMonitor(){ if(window.ede._densityTimer) return; window.ede._dynamicAdjust={active:false, origLevel:null, origSpeed:null, lastChange:0};
     const tick=()=>{ const dm=window.ede.danmaku; if(!dm||!dm.media){ window.ede._densityTimer=setTimeout(tick,4000); return; } const ct=dm.media.currentTime; let upcoming=0; const counts=window.ede._countsBySecond; if(counts){ const s=Math.floor(ct); const end=Math.min(counts.length-1, s+5); for(let i=s;i<=end;i++) upcoming+=counts[i]||0; }
       const high=120, low=40; const now=nowSec(); const cool=2; // 2s 冷却
-      if(!window.ede._dynamicAdjust.active && upcoming>high && now-window.ede._dynamicAdjust.lastChange>cool){ const level=parseInt(localStorage.getItem('danmakuFilterLevel')||0); if(level<4){ window.ede._dynamicAdjust.origLevel=level; localStorage.setItem('danmakuFilterLevel', level+1); }
+      if(!window.ede._dynamicAdjust.active && upcoming>high && now-window.ede._dynamicAdjust.lastChange>cool){ const level=parseInt(StorageManager.get('danmakuFilterLevel', 0)||0); if(level<4){ window.ede._dynamicAdjust.origLevel=level; StorageManager.set('danmakuFilterLevel', level+1); }
         const sp=dm.speed; window.ede._dynamicAdjust.origSpeed=sp; const newSpeed=Math.max(60, Math.round(sp*0.7)); if(newSpeed!==sp) dm.speed=newSpeed; window.ede._dynamicAdjust.active=true; window.ede._dynamicAdjust.lastChange=now; showTooltip('弹幕拥挤: 已临时调整过滤/速度'); onFilterConfigChanged(); }
-      else if(window.ede._dynamicAdjust.active && upcoming<low && now-window.ede._dynamicAdjust.lastChange>cool){ if(window.ede._dynamicAdjust.origLevel!=null) localStorage.setItem('danmakuFilterLevel', window.ede._dynamicAdjust.origLevel); if(window.ede._dynamicAdjust.origSpeed!=null) dm.speed=window.ede._dynamicAdjust.origSpeed; window.ede._dynamicAdjust={active:false, origLevel:null, origSpeed:null, lastChange:now}; showTooltip('弹幕恢复正常'); onFilterConfigChanged(); }
+      else if(window.ede._dynamicAdjust.active && upcoming<low && now-window.ede._dynamicAdjust.lastChange>cool){ if(window.ede._dynamicAdjust.origLevel!=null) StorageManager.set('danmakuFilterLevel', window.ede._dynamicAdjust.origLevel); if(window.ede._dynamicAdjust.origSpeed!=null) dm.speed=window.ede._dynamicAdjust.origSpeed; window.ede._dynamicAdjust={active:false, origLevel:null, origSpeed:null, lastChange:now}; showTooltip('弹幕恢复正常'); onFilterConfigChanged(); }
       let next=7000; if(upcoming>high) next=3000; else if(window.ede._dynamicAdjust.active) next=4000; else if(upcoming<low) next=8000; window.ede._densityTimer=setTimeout(tick,next); };
     window.ede._densityTimer=setTimeout(tick,3000);
   }
 
   function danmakuParser(arr){
     if(!arr||!arr.length) return [];
-    const fontSize = parseInt(localStorage.getItem('danmakuFontSize')) || (isMobile?fontSizeMobile:fontSizeDesktop);
+    const fontSize = parseInt(StorageManager.get('danmakuFontSize', isMobile?fontSizeMobile:fontSizeDesktop));
     const fontDecl = `${fontSize}px sans-serif`;
     const whiteShadow='-1px -1px #000, -1px 1px #000, 1px -1px #000, 1px 1px #000';
     const blackShadow='-1px -1px #fff, -1px 1px #fff, 1px -1px #fff, 1px 1px #fff';
     const modeMap={6:'ltr',1:'rtl',5:'top',4:'bottom'};
-    const out=new Array(arr.length); let oIdx=0; let id=0;
-    for(let i=0;i<arr.length;i++){
-      const c=arr[i]; if(!c||!c.p) continue; const values=c.p.split(','); const mode=modeMap[values[1]]; if(!mode) continue; const colorHex=`000000${Number(values[2]).toString(16)}`.slice(-6); const isBlack = colorHex==='000000'; out[oIdx++]={ id:id++, text:c.m, mode, time:+values[0], style:{ fontSize:`${fontSize}px`, color:`#${colorHex}`, textShadow: isBlack?blackShadow:whiteShadow, font:fontDecl, fillStyle:`#${colorHex}`, strokeStyle: isBlack? '#fff':'#000', lineWidth:2 } }; }
-    out.length=oIdx; return out;
+    // 来源平台映射：预编译避免循环内重复调用 toLowerCase
+    const sourceMap = new Map([
+      ['bilibili', 'BiliBili'], ['bili', 'BiliBili'],
+      ['acfun', 'AcFun'],
+      ['gamer', 'Gamer'], ['baha', 'Gamer'],
+      ['dandan', 'DanDanPlay'], ['dandanplay', 'DanDanPlay'],
+      ['diyidan', 'Diyidan'], ['5dm', 'Diyidan'],
+      ['iyingdi', 'Iyingdi'], ['异世界', 'Iyingdi']
+    ]);
+    // 来源平台正则匹配：[BiliBili]xxx 或 [AcFun]xxx
+    const sourceReg = /^\[([^\]]+)\]/;
+    const arrLen = arr.length;
+    const out = new Array(arrLen); let oIdx = 0; let id = 0;
+    for(let i = 0; i < arrLen; i++){
+      const c = arr[i]; if(!c || !c.p) continue;
+      const values = c.p.split(','); const modeKey = values[1]; const mode = modeMap[modeKey]; if(!mode) continue;
+      const colorNum = Number(values[2]); const colorHex = `000000${colorNum.toString(16)}`.slice(-6); const isBlack = colorNum === 0;
+      // 提取来源平台和用户ID
+      let source = 'DanDanPlay'; // 默认来源
+      let userId = ''; // 用户ID
+      const senderField = values[3] || '';
+      const sourceMatch = senderField.match(sourceReg);
+      if(sourceMatch && sourceMatch[1]){
+        const srcId = sourceMatch[1];
+        userId = senderField.slice(srcId.length + 2).trim(); // 优化: 避免 replace+trim
+        // 优先使用 danmakuSourcePlatforms 映射
+        if(danmakuSourcePlatforms[srcId]) source = srcId;
+        else {
+          const srcLower = srcId.toLowerCase();
+          // 使用 Map 查找避免多次 includes
+          for(const [key, val] of sourceMap){ if(srcLower.includes(key)){ source = val; break; } }
+          if(source === 'DanDanPlay' && srcLower !== 'dandan' && srcLower !== 'dandanplay') source = 'Unknown';
+        }
+      } else {
+        userId = senderField; // 没有来源标识，整个字段为用户ID
+      }
+      // cid从原始弹幕数据中获取（如果有）
+      const cid = c.cid || `${id}`;
+      out[oIdx++] = { id: id++, text: c.m, mode, time: +values[0], source, userId, cid, color: colorHex, style:{ fontSize:`${fontSize}px`, color:`#${colorHex}`, textShadow: isBlack ? blackShadow : whiteShadow, font: fontDecl, fillStyle:`#${colorHex}`, strokeStyle: isBlack ? '#fff' : '#000', lineWidth: 2 } };
+    }
+    out.length = oIdx; return out;
   }
 
   // ===== 还原后续原功能代码 (搜索、过滤设置、日志、UI 对话框) =====
@@ -733,7 +935,45 @@
         noResultsMsg.style.display='none';
         updateAnimeSelects(currentAnimeInfo, animeSelect, episodeSelect);
         updateAnimeImg(currentAnimeInfo.animes[0].animeId);
-        if(window.ede._currentEpisode!==undefined) episodeSelect.value = window.ede._currentEpisode;
+        // 智能跨季检测：根据 Emby 集数自动选择正确的季和集
+        if(window.ede._currentEpisode !== undefined && currentAnimeInfo.animes.length > 0) {
+          const embyEpIndex = window.ede._currentEpisode + 1; // 转换为1-based
+          let cumulativeEps = 0;
+          let targetSeasonIdx = 0;
+          let targetEpIdx = 0;
+          // 按类型分组，TV系列按顺序累计
+          const tvSeasons = [];
+          currentAnimeInfo.animes.forEach((a, idx) => { if(a.type === 'tvseries') tvSeasons.push({ anime: a, idx }); });
+          if(tvSeasons.length > 1) {
+            // 多季情况：计算应该在哪一季
+            for(let i = 0; i < tvSeasons.length; i++) {
+              const seasonEps = tvSeasons[i].anime.episodes.filter(ep => isMainEpisode(ep.episodeTitle)).length;
+              if(embyEpIndex <= cumulativeEps + seasonEps) {
+                targetSeasonIdx = tvSeasons[i].idx;
+                targetEpIdx = embyEpIndex - cumulativeEps - 1;
+                console.log(`📍 手动搜索跨季检测: Emby E${embyEpIndex} -> 第${i+1}季 第${embyEpIndex - cumulativeEps}集`);
+                break;
+              }
+              cumulativeEps += seasonEps;
+              targetSeasonIdx = tvSeasons[i].idx;
+              targetEpIdx = embyEpIndex - cumulativeEps - 1;
+            }
+            // 更新季选择
+            animeSelect.value = targetSeasonIdx;
+            updateEpisodeSelect(currentAnimeInfo.animes[targetSeasonIdx]);
+            updateAnimeImg(currentAnimeInfo.animes[targetSeasonIdx].animeId);
+            // 在正片中找到对应集数
+            const mainEps = currentAnimeInfo.animes[targetSeasonIdx].episodes.filter(ep => isMainEpisode(ep.episodeTitle));
+            if(targetEpIdx >= 0 && targetEpIdx < mainEps.length) {
+              const targetEp = mainEps[targetEpIdx];
+              const realIdx = currentAnimeInfo.animes[targetSeasonIdx].episodes.indexOf(targetEp);
+              if(realIdx >= 0) episodeSelect.value = realIdx;
+            }
+          } else {
+            // 单季情况：直接使用索引
+            episodeSelect.value = window.ede._currentEpisode;
+          }
+        }
         animeSelect.onchange = () => { const selectedAnime=currentAnimeInfo.animes[animeSelect.value]; updateEpisodeSelect(selectedAnime); updateAnimeImg(selectedAnime.animeId); };
         if(fallbackTried && !fallbackUsed){ fallbackUsed = true; showTooltip('已使用原语言标题匹配到结果'); }
       } catch(err){ if(err.name==='AbortError') console.log('Search canceled'); else { console.error(err); noResultsMsg.textContent='搜索失败: '+err.message; } }
@@ -766,44 +1006,503 @@
   function appendvideoOsdDanmakuInfo(loadSum){ const episode_info=window.ede.episode_info||{}; const {episodeId, animeTitle, episodeTitle}=episode_info; const videoOsdContainer=document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`); let videoOsdDanmakuTitle=document.getElementById('videoOsdDanmakuTitle'); if(!videoOsdDanmakuTitle){ videoOsdDanmakuTitle=document.createElement('h3'); videoOsdDanmakuTitle.id='videoOsdDanmakuTitle'; videoOsdDanmakuTitle.classList.add('videoOsdTitle'); videoOsdDanmakuTitle.style=videoOsdDanmakuInfoStyle; videoOsdDanmakuTitle.style.display=window.ede.showDanmakuInfo?'block':'none'; }
     let text='弹幕：'; if(episodeId){ text+=`${animeTitle} - ${episodeTitle||''} - ${loadSum||0}/${window.ede.originalCount}条`; } else { text+='未匹配'; }
     videoOsdDanmakuTitle.innerText=text; if(videoOsdContainer) videoOsdContainer.append(videoOsdDanmakuTitle); }
-  function getDanmakuComments(ede){ return ede.danmaku && ede.danmaku.comments ? ede.danmaku.comments : []; }
 
-  // showFilterDialog 旧函数已弃用，入口合并到弹幕中心
-
-  function showLogDialog(){ const html=`<div style=\"display:flex;flex-direction:column;gap:1em;\">\n<div style=\"display:flex;justify-content:space-between;align-items:center;\"><h3 style=\"margin:0;\">调试日志</h3><div style=\"display:flex;gap:.5em;\"><button is=\"emby-button\" id=\"toggleLogContent\" class=\"paper-icon-button-light\" title=\"展开/折叠日志\"><span class=\"md-icon\">expand_more</span></button><button is=\"emby-button\" id=\"closeLogDialog\" class=\"paper-icon-button-light\" title=\"关闭\"><span class=\"md-icon\">close</span></button></div></div>\n<div id=\"logContent\" style=\"display:none;white-space:pre-wrap;background:#333;padding:1em;max-height:400px;overflow-y:auto;\"></div>\n<div><button is=\"emby-button\" id=\"toggleMoreSettings\" class=\"raised\" style=\"width:100%;margin-bottom:1em;text-align:left;padding:0.7em;\"><span class=\"md-icon\" style=\"margin-right:0.5em;\">settings</span>更多设置<span class=\"md-icon\" style=\"margin-left:auto;\">expand_more</span></button><div id=\"moreSettings\" style=\"display:none;background:rgba(255,255,255,0.05);padding:1em;border-radius:8px;\">\n<div style=\"margin-bottom:1em;\"><label style=\"display:flex;align-items:center;margin-bottom:1em;\"><input type=\"checkbox\" is=\"emby-checkbox\" id=\"cacheEnabledCheckbox\"><span style=\"margin-left:0.5em;\">启用缓存</span></label></div>\n<div class=\"setting-section\" style=\"margin-bottom:1em;\"><button is=\"emby-button\" id=\"toggleButtonOrder\" class=\"raised\" style=\"width:100%;text-align:left;padding:0.7em;margin-bottom:1em;\"><span class=\"md-icon\" style=\"margin-right:0.5em;\">sort</span>功能排序<span class=\"md-icon\" style=\"margin-left:auto;\">expand_more</span></button><div id=\"buttonOrderContainer\" style=\"display:none;padding:1em;background:rgba(0,0,0,0.2);border-radius:8px;\"></div></div>\n<div class=\"setting-section\"><button is=\"emby-button\" id=\"toggleProxySettings\" class=\"raised\" style=\"width:100%;text-align:left;padding:0.7em;margin-bottom:1em;\"><span class=\"md-icon\" style=\"margin-right:0.5em;\">dns</span>代理设置<span class=\"md-icon\" style=\"margin-left:auto;\">expand_more</span></button>\n<div id=\"proxySettingsContainer\" style=\"display:none;padding:1em;background:rgba(0,0,0,0.2);border-radius:8px;\">\n<div style=\"display:flex;flex-direction:column;gap:0.5em;\">\n<label><input type=\"radio\" name=\"proxyType\" value=\"default\" ${!window.ede.customProxyServer?'checked':''}> 使用默认代理服务器</label>\n<div style=\"display:flex;align-items:center;gap:0.5em;\"><label><input type=\"radio\" name=\"proxyType\" value=\"custom\" ${window.ede.customProxyServer?'checked':''}> 自定义代理服务器</label><input type=\"text\" is=\"emby-input\" id=\"customProxyInput\" value=\"${window.ede.customProxyServer}\" placeholder=\"https://your-proxy-server/\" style=\"flex:1;${!window.ede.customProxyServer?'opacity:0.5;':''}\"></div></div></div></div></div>\n<div style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.5em;\"><button is=\"emby-button\" id=\"refreshLogBtn\" class=\"raised\">刷新日志</button><button is=\"emby-button\" id=\"copyLogBtn\" class=\"raised\">复制日志</button><button is=\"emby-button\" id=\"testCorsBtn\" class=\"raised\">测试CORS</button><button is=\"emby-button\" id=\"clearCacheBtn\" class=\"raised\">清除缓存</button></div>`; const dialog=document.createElement('dialog'); dialog.style='border:0;width:80%;max-width:800px;background:transparent;padding:0;'; dialog.innerHTML=html; document.body.appendChild(dialog); unifyDialog(dialog,'调试日志');
-    const toggleLogBtn=dialog.querySelector('#toggleLogContent'); const logContent=dialog.querySelector('#logContent'); const toggleMoreBtn=dialog.querySelector('#toggleMoreSettings'); const moreSettings=dialog.querySelector('#moreSettings'); const toggleButtonOrderBtn=dialog.querySelector('#toggleButtonOrder'); const buttonOrderContainer=dialog.querySelector('#buttonOrderContainer'); const toggleProxySettingsBtn=dialog.querySelector('#toggleProxySettings'); const proxySettingsContainer=dialog.querySelector('#proxySettingsContainer');
-    function setupToggle(btn, content){ btn.onclick=()=>{ const open=content.style.display!=='none'; content.style.display=open?'none':'block'; const icon=btn.querySelector('.md-icon:last-child'); if(icon) icon.textContent=open?'expand_more':'expand_less'; }; }
-    setupToggle(toggleLogBtn, logContent); setupToggle(toggleMoreBtn, moreSettings); setupToggle(toggleButtonOrderBtn, buttonOrderContainer); setupToggle(toggleProxySettingsBtn, proxySettingsContainer);
-    const refreshLog=()=>{ logContent.textContent=generateLogContent(); }; refreshLog(); if(buttonOrderContainer) updateButtonOrderList(buttonOrderContainer);
-    const proxyTypeInputs=dialog.querySelectorAll('input[name="proxyType"]'); const customProxyInput=dialog.querySelector('#customProxyInput');
-    proxyTypeInputs.forEach(input=>{ input.addEventListener('change',()=>{ if(input.value==='default'){ window.ede.customProxyServer=''; customProxyInput.value=''; customProxyInput.style.opacity='0.5'; localStorage.removeItem('danmakuCustomProxy'); window.ede.currentProxyIndex=0; localStorage.setItem('danmakuProxyIndex',0); showTooltip('已切换至默认代理服务器'); } else { customProxyInput.style.opacity='1'; } }); });
-    let proxyUpdateTimeout; customProxyInput.addEventListener('input',()=>{ clearTimeout(proxyUpdateTimeout); proxyUpdateTimeout=setTimeout(()=>{ const v=customProxyInput.value.trim(); if(v && v!==window.ede.customProxyServer){ window.ede.customProxyServer=v; localStorage.setItem('danmakuCustomProxy', v); showTooltip('已更新自定义代理服务器'); } },1000); });
+  // 简化后的日志对话框（排序功能已移至弹幕中心-布局）
+  function showLogDialog(){
+    const dialog=document.createElement('dialog'); dialog.style='border:0;width:80%;max-width:750px;background:transparent;padding:0;';
+    dialog.innerHTML=`<div style="display:flex;flex-direction:column;gap:1em;">
+      <div id="logContent" style="white-space:pre-wrap;background:#222;padding:1em;max-height:450px;overflow-y:auto;border-radius:8px;font-size:12px;font-family:Consolas,Monaco,monospace;line-height:1.6;border:1px solid rgba(255,255,255,.1);"></div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0.5em;">
+        <button is="emby-button" id="refreshLogBtn" class="raised">刷新</button>
+        <button is="emby-button" id="copyLogBtn" class="raised">复制</button>
+        <button is="emby-button" id="consoleLogBtn" class="raised">输出到控制台</button>
+        <button is="emby-button" id="testCorsBtn" class="raised">测试CORS</button>
+        <button is="emby-button" id="clearCacheBtn" class="raised">清除缓存</button>
+      </div>
+      <div class="note" style="font-size:11px;opacity:.65;">按 F12 打开开发者工具查看控制台日志。更多设置请前往弹幕中心 → 高级</div>
+    </div>`;
+    document.body.appendChild(dialog); unifyDialog(dialog,'调试日志');
+    const logContent=dialog.querySelector('#logContent');
+    const refreshLog=()=>{ logContent.innerHTML=generateLogContentHtml(); }; refreshLog();
     dialog.querySelector('#refreshLogBtn').onclick=refreshLog;
     dialog.querySelector('#copyLogBtn').onclick=()=>{ try { const txt=generateLogContent(); const ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); showTooltip('日志已复制到剪贴板'); } catch(e){ console.error(e); showTooltip('复制失败','error'); } };
-    dialog.querySelector('#testCorsBtn').onclick=async ()=>{ try { const btn=dialog.querySelector('#testCorsBtn'); btn.disabled=true; btn.textContent='测试中...'; window.ede.corsStatus='测试中...'; const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex]; const testUrl=`${proxyServer}api/v2/search/episodes?anime=test`; const resp=await fetch(testUrl); const data=await resp.json(); if(resp.ok && data){ window.ede.corsStatus='正常'; window.ede.lastApiResponse=JSON.stringify(data).slice(0,100)+'...'; showTooltip('CORS测试通过'); } else { window.ede.corsStatus='异常: API响应无效'; window.ede.lastApiResponse=JSON.stringify(data); showTooltip('CORS测试失败','error'); } } catch(err){ window.ede.corsStatus='异常: '+err.message; window.ede.lastError=err.stack; window.ede.lastApiResponse='Error: '+err.message; showTooltip('CORS测试失败: '+err.message,'error'); } finally { const btn=dialog.querySelector('#testCorsBtn'); btn.disabled=false; btn.textContent='测试CORS'; const lc=dialog.querySelector('#logContent'); if(lc) lc.textContent=generateLogContent(); } };
-    dialog.querySelector('#clearCacheBtn').onclick=()=>{ const keys=Object.keys(localStorage); let count=0; for(const k of keys){ if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')||k.startsWith('_search_lock_')){ localStorage.removeItem(k); count++; } } showTooltip(`已清除 ${count} 条缓存记录`); logContent.textContent=generateLogContent(); };
-    dialog.querySelector('#closeLogDialog').onclick=()=>dialog.remove(); dialog.showModal();
-    const cacheEnabledCheckbox=dialog.querySelector('#cacheEnabledCheckbox'); cacheEnabledCheckbox.checked=window.ede.cacheEnabled; cacheEnabledCheckbox.addEventListener('change',()=>{ window.ede.cacheEnabled=cacheEnabledCheckbox.checked; localStorage.setItem('danmakuCacheEnabled', cacheEnabledCheckbox.checked); });
+    dialog.querySelector('#consoleLogBtn').onclick=()=>{ 
+      console.group(`[EDE v${EDE_VERSION}] 调试日志 - ${new Date().toLocaleString()}`);
+      console.log('%c基础信息', 'color:#00a4dc;font-weight:bold');
+      console.log('User Agent:', navigator.userAgent);
+      console.log('移动设备:', isMobile);
+      console.log('版本:', EDE_VERSION);
+      console.log('%c视频状态', 'color:#00a4dc;font-weight:bold');
+      console.log('视频元素:', document.querySelector(mediaQueryStr));
+      console.log('视频状态:', document.querySelector(mediaQueryStr)?.readyState);
+      console.log('媒体容器:', document.querySelector(mediaContainerQueryStr));
+      console.log('%c弹幕状态', 'color:#00a4dc;font-weight:bold');
+      console.log('弹幕实例:', window.ede?.danmaku);
+      console.log('原始弹幕数:', window.ede?.originalCount || 0);
+      console.log('过滤后弹幕数:', window.ede?.danmaku?.comments?.length || 0);
+      console.log('弹幕开关:', window.ede?.danmakuSwitch);
+      console.log('加载状态:', window.ede?.loading);
+      console.log('%c匹配信息', 'color:#00a4dc;font-weight:bold');
+      console.log('当前播放信息:', window.ede?.episode_info);
+      console.log('自动匹配状态:', window.ede?.autoMatchStatus || '未开始');
+      console.log('%c设置', 'color:#00a4dc;font-weight:bold');
+      console.log('全局透明度:', globalOpacity);
+      console.log('简繁转换:', window.ede?.chConvert);
+      console.log('字体大小:', isMobile?fontSizeMobile:fontSizeDesktop, 'px');
+      console.log('过滤等级:', localStorage.getItem('danmakuFilterLevel')||0);
+      console.log('%c代理与缓存', 'color:#00a4dc;font-weight:bold');
+      console.log('当前代理:', window.ede.customProxyServer || '默认');
+      console.log('缓存启用:', window.ede.cacheEnabled);
+      console.log('CORS状态:', window.ede?.corsStatus || '未测试');
+      const cacheKeys=Object.keys(localStorage);
+      console.log('搜索缓存:', cacheKeys.filter(k=>k.startsWith('_search_cache_')).length, '条');
+      console.log('弹幕缓存:', cacheKeys.filter(k=>k.startsWith('_danmaku_cache_')).length, '条');
+      if(window.ede?.lastError) { console.log('%c错误信息', 'color:#ff6b6b;font-weight:bold'); console.error('最后错误:', window.ede.lastError); }
+      console.groupEnd();
+      showTooltip('已输出到控制台 (F12查看)');
+    };
+    dialog.querySelector('#testCorsBtn').onclick=async ()=>{ try { const btn=dialog.querySelector('#testCorsBtn'); btn.disabled=true; btn.textContent='测试中...'; window.ede.corsStatus='测试中...'; const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex]; const testUrl=`${proxyServer}api/v2/search/episodes?anime=test`; console.log('[EDE] CORS测试:', testUrl); const resp=await fetch(testUrl); const data=await resp.json(); if(resp.ok && data){ window.ede.corsStatus='正常'; window.ede.lastApiResponse=JSON.stringify(data).slice(0,100)+'...'; console.log('[EDE] CORS测试通过:', data); showTooltip('CORS测试通过'); } else { window.ede.corsStatus='异常: API响应无效'; window.ede.lastApiResponse=JSON.stringify(data); console.warn('[EDE] CORS测试失败:', data); showTooltip('CORS测试失败','error'); } } catch(err){ window.ede.corsStatus='异常: '+err.message; window.ede.lastError=err.stack; window.ede.lastApiResponse='Error: '+err.message; console.error('[EDE] CORS测试错误:', err); showTooltip('CORS测试失败: '+err.message,'error'); } finally { const btn=dialog.querySelector('#testCorsBtn'); btn.disabled=false; btn.textContent='测试CORS'; refreshLog(); } };
+    dialog.querySelector('#clearCacheBtn').onclick=()=>{ const keys=Object.keys(localStorage); let count=0; for(const k of keys){ if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')||k.startsWith('_search_lock_')){ localStorage.removeItem(k); count++; } } console.log(`[EDE] 缓存已清除: ${count} 条记录`); showTooltip(`已清除 ${count} 条缓存记录`); refreshLog(); };
+    dialog.showModal();
   }
-  function generateLogContent(){ const proxyServer=window.ede.customProxyServer || '默认服务器'; let cacheSize=0; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')) cacheSize+=localStorage.getItem(k).length; }
-    return `User Agent: ${navigator.userAgent}\n移动设备: ${isMobile}\n视频元素: ${!!document.querySelector(mediaQueryStr)}\n视频状态: ${document.querySelector(mediaQueryStr)?.readyState}\n弹幕状态: ${!!window.ede?.danmaku}\n原始弹幕数: ${window.ede?.originalCount || 0}\n当前弹幕数: ${window.ede?.danmaku?.comments?.length || 0}\n媒体容器: ${!!document.querySelector(mediaContainerQueryStr)}\n弹幕开关: ${window.ede?.danmakuSwitch}\n全局透明度: ${globalOpacity}\n简繁转换: ${window.ede?.chConvert}\n加载状态: ${window.ede?.loading}\n当前播放信息: ${JSON.stringify(window.ede?.episode_info, null, 2)}\n字体大小: ${isMobile?fontSizeMobile:fontSizeDesktop}px\n当前代理: ${proxyServer}\n最后错误: ${window.ede?.lastError || '无'}\nCORS状态: ${window.ede?.corsStatus || '未测试'}\n自动匹配状态: ${window.ede?.autoMatchStatus || '未开始'}\nAPI响应: ${window.ede?.lastApiResponse || '无'}\n缓存信息:\n- 搜索缓存: ${Object.keys(localStorage).filter(k=>k.startsWith('_search_cache_')).length} 条\n- 弹幕缓存: ${Object.keys(localStorage).filter(k=>k.startsWith('_danmaku_cache_')).length} 条\n- 总大小: ${(cacheSize/1024/1024).toFixed(2)} MB`; }
+  function generateLogContentHtml(){ 
+    const proxyDisplay = window.ede.customProxyServer ? window.ede.customProxyServer : '默认代理'; 
+    let cacheSize=0; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')) cacheSize+=localStorage.getItem(k).length; }
+    const epi=window.ede?.episode_info;
+    const matchInfo = epi ? `${epi.animeTitle||''}${epi.episodeTitle?' - '+epi.episodeTitle:''}` : '未匹配';
+    const filterLevel = localStorage.getItem('danmakuFilterLevel')||'0';
+    const video = document.querySelector(mediaQueryStr);
+    const videoStateMap = {0:'无数据',1:'元数据',2:'当前帧',3:'未来帧',4:'完全加载'};
+    const videoState = video ? (videoStateMap[video.readyState]||video.readyState) : '无';
+    const h = (s,c='#00c8ff') => `<span style="color:${c}">${s}</span>`;
+    const g = (s) => `<span style="opacity:.6">${s}</span>`;
+    return `${g('═══════ 基础信息 ═══════')}
+${h('版本')}:     v${EDE_VERSION}
+${h('UA')}:       ${navigator.userAgent.slice(0,80)}...
+${h('移动设备')}: ${isMobile?'是':'否'}
+${h('时间')}:     ${new Date().toLocaleString()}
 
-  // 旧 showDanmakuSettingsDialog 已移除，功能整合至弹幕中心 appearance
+${g('═══════ 视频状态 ═══════')}
+${h('视频元素')}: ${video?'存在':'不存在'}
+${h('就绪状态')}: ${videoState}
+${h('媒体容器')}: ${document.querySelector(mediaContainerQueryStr)?'存在':'不存在'}
+${h('当前时间')}: ${video?video.currentTime.toFixed(2)+'s':'N/A'}
+${h('总时长')}:   ${video?video.duration?.toFixed(2)+'s':'N/A'}
+
+${g('═══════ 弹幕状态 ═══════')}
+${h('弹幕实例')}: ${window.ede?.danmaku?'已创建':'未创建'}
+${h('弹幕开关')}: ${window.ede?.danmakuSwitch?'开':'关'}
+${h('原始弹幕')}: ${window.ede?.originalCount || 0} 条
+${h('当前弹幕')}: ${window.ede?.danmaku?.comments?.length || 0} 条
+${h('加载状态')}: ${window.ede?.loading?'加载中':'空闲'}
+
+${g('═══════ 匹配信息 ═══════')}
+${h('匹配结果')}: ${matchInfo}
+${h('Episode ID')}: ${epi?.episodeId||'无'}
+${h('匹配状态')}: ${window.ede?.autoMatchStatus || '未开始'}
+
+${g('═══════ 设置 ═══════')}
+${h('透明度')}:   ${Math.round(globalOpacity*100)}%
+${h('简繁转换')}: ${['不转换','转简体','转繁体'][window.ede?.chConvert||0]}
+${h('字体大小')}: ${isMobile?fontSizeMobile:fontSizeDesktop}px
+${h('过滤等级')}: Lv.${filterLevel}
+
+${g('═══════ 代理与缓存 ═══════')}
+${h('当前代理')}: ${proxyDisplay}
+${h('缓存启用')}: ${window.ede.cacheEnabled?'是':'否'}
+${h('CORS状态')}: ${window.ede?.corsStatus || '未测试'}
+${h('搜索缓存')}: ${Object.keys(localStorage).filter(k=>k.startsWith('_search_cache_')).length} 条
+${h('弹幕缓存')}: ${Object.keys(localStorage).filter(k=>k.startsWith('_danmaku_cache_')).length} 条
+${h('缓存大小')}: ${(cacheSize/1024/1024).toFixed(2)} MB
+
+${g('═══════ 错误信息 ═══════')}
+${h('最后错误','#ff6b6b')}: ${window.ede?.lastError || '无'}
+${h('API响应')}: ${window.ede?.lastApiResponse || '无'}`; 
+  }
+  function generateLogContent(){ const proxyDisplay = window.ede.customProxyServer ? window.ede.customProxyServer : '默认代理'; let cacheSize=0; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')) cacheSize+=localStorage.getItem(k).length; }
+    return `[EDE v${EDE_VERSION}] 调试日志 - ${new Date().toLocaleString()}\n\nUser Agent: ${navigator.userAgent}\n移动设备: ${isMobile}\n视频元素: ${!!document.querySelector(mediaQueryStr)}\n视频状态: ${document.querySelector(mediaQueryStr)?.readyState}\n弹幕状态: ${!!window.ede?.danmaku}\n原始弹幕数: ${window.ede?.originalCount || 0}\n当前弹幕数: ${window.ede?.danmaku?.comments?.length || 0}\n媒体容器: ${!!document.querySelector(mediaContainerQueryStr)}\n弹幕开关: ${window.ede?.danmakuSwitch}\n全局透明度: ${globalOpacity}\n简繁转换: ${window.ede?.chConvert}\n加载状态: ${window.ede?.loading}\n当前播放信息: ${JSON.stringify(window.ede?.episode_info, null, 2)}\n字体大小: ${isMobile?fontSizeMobile:fontSizeDesktop}px\n当前代理: ${proxyDisplay}\n最后错误: ${window.ede?.lastError || '无'}\nCORS状态: ${window.ede?.corsStatus || '未测试'}\n自动匹配状态: ${window.ede?.autoMatchStatus || '未开始'}\nAPI响应: ${window.ede?.lastApiResponse || '无'}\n缓存信息:\n- 搜索缓存: ${Object.keys(localStorage).filter(k=>k.startsWith('_search_cache_')).length} 条\n- 弹幕缓存: ${Object.keys(localStorage).filter(k=>k.startsWith('_danmaku_cache_')).length} 条\n- 总大小: ${(cacheSize/1024/1024).toFixed(2)} MB`; }
+
+  // ===== 弹幕列表查看对话框（增强版）=====
+  function showDanmakuListDialog(){
+    // 获取原始弹幕和过滤后弹幕进行对比
+    const allComments = window.ede?.parsedComments || [];
+    const filteredComments = window.ede?.filteredComments || allComments;
+    const filteredIds = new Set(filteredComments.map(c => c.id));
+    
+    if(!allComments.length){ showTooltip('暂无弹幕数据'); return; }
+    
+    // 获取已屏蔽用户列表
+    let currentBlockedUsers = StorageManager.get('danmakuBlockedUsers', []);
+    
+    const dialog = document.createElement('dialog');
+    dialog.id = 'ede-danmaku-list';
+    dialog.style = 'border:0;width:90%;max-width:1100px;background:transparent;padding:0;max-height:90vh;';
+    
+    // 统计来源分布
+    const sourceStats = {}, filteredSourceStats = {};
+    for(const c of allComments){
+      const src = c.source || 'Unknown';
+      sourceStats[src] = (sourceStats[src]||0) + 1;
+      if(filteredIds.has(c.id)) filteredSourceStats[src] = (filteredSourceStats[src]||0) + 1;
+    }
+    
+    const sourceStatHtml = Object.entries(sourceStats).map(([k,v])=>{
+      const plat = danmakuSourcePlatforms[k] || {name:k, color:'#888'};
+      const fv = filteredSourceStats[k] || 0;
+      return `<span class="dl-stat-badge" style="--badge-color:${plat.color}"><span class="dl-stat-dot"></span>${plat.name}: ${fv}/${v}</span>`;
+    }).join('');
+    
+    dialog.innerHTML = `
+    <style>
+      #ede-danmaku-list { color-scheme: dark; }
+      #ede-danmaku-list * { box-sizing: border-box; }
+      .dl-shell { display:flex;flex-direction:column;background:linear-gradient(145deg,#1e1e22,#16161a);border-radius:16px;overflow:hidden;color:#e8e8e8;font-size:13px;box-shadow:0 12px 40px rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.06); }
+      .dl-header { padding:16px 20px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap; }
+      .dl-title { font-size:17px;font-weight:600;display:flex;align-items:center;gap:10px; }
+      .dl-stats { display:flex;flex-wrap:wrap;gap:6px;margin-top:8px; }
+      .dl-stat-badge { display:inline-flex;align-items:center;gap:5px;padding:3px 10px;background:color-mix(in srgb, var(--badge-color) 15%, transparent);color:var(--badge-color);border-radius:12px;font-size:11px;font-weight:500; }
+      .dl-stat-dot { width:7px;height:7px;background:var(--badge-color);border-radius:50%; }
+      .dl-toolbar { display:flex;gap:10px;align-items:center;flex-wrap:wrap; }
+      .dl-search { background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 14px;color:#fff;font:inherit;width:200px;outline:none;transition:.2s; }
+      .dl-search:focus { border-color:#00a4dc;background:rgba(0,164,220,.1); }
+      .dl-select { background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 12px;color:#fff;font:inherit;outline:none;cursor:pointer; }
+      .dl-select option { background:#222;color:#fff; }
+      .dl-btn { background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 16px;color:#fff;cursor:pointer;font:inherit;transition:.2s;display:inline-flex;align-items:center;gap:6px; }
+      .dl-btn:hover { background:rgba(255,255,255,.15); }
+      .dl-btn-primary { background:rgba(0,164,220,.2);border-color:rgba(0,164,220,.3);color:#00c8ff; }
+      .dl-btn-danger { background:rgba(220,50,50,.15);border-color:rgba(220,50,50,.25);color:#ff6b6b; }
+      .dl-info-bar { padding:10px 20px;font-size:12px;color:#888;border-bottom:1px solid rgba(255,255,255,.05);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px; }
+      .dl-info-bar strong { color:#00c8ff; }
+      .dl-tabs { display:flex;gap:4px; }
+      .dl-tab { padding:6px 14px;border-radius:8px;cursor:pointer;font-size:12px;background:rgba(255,255,255,.05);border:1px solid transparent;transition:.2s; }
+      .dl-tab:hover { background:rgba(255,255,255,.1); }
+      .dl-tab.active { background:rgba(0,164,220,.2);border-color:rgba(0,164,220,.3);color:#00c8ff; }
+      .dl-list-wrap { max-height:55vh;overflow-y:auto;padding:0; }
+      .dl-list-wrap::-webkit-scrollbar { width:8px; }
+      .dl-list-wrap::-webkit-scrollbar-track { background:rgba(255,255,255,.05); }
+      .dl-list-wrap::-webkit-scrollbar-thumb { background:rgba(255,255,255,.15);border-radius:4px; }
+      .dl-table { width:100%;border-collapse:collapse; }
+      .dl-table th { padding:12px 10px;text-align:left;font-weight:500;font-size:12px;color:#888;border-bottom:1px solid rgba(255,255,255,.1);position:sticky;top:0;background:#1a1a1e;z-index:1; }
+      .dl-table th.sortable { cursor:pointer; }
+      .dl-table th.sortable:hover { color:#00c8ff; }
+      .dl-table td { padding:10px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle; }
+      .dl-table tr:hover { background:rgba(255,255,255,.03); }
+      .dl-table tr.filtered { opacity:.5;background:rgba(255,100,100,.05); }
+      .dl-table tr.blocked { opacity:.4;background:rgba(255,50,50,.08);text-decoration:line-through; }
+      .dl-time { color:#00c8ff;cursor:pointer;font-variant-numeric:tabular-nums;font-family:monospace;white-space:nowrap; }
+      .dl-time:hover { text-decoration:underline; }
+      .dl-content { word-break:break-all;max-width:400px; }
+      .dl-content-color { display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:middle;border:1px solid rgba(255,255,255,.2); }
+      .dl-source { font-size:11px;white-space:nowrap; }
+      .dl-user { font-size:11px;color:#888;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer; }
+      .dl-user:hover { color:#ff6b6b; }
+      .dl-mode { font-size:11px;color:#666;white-space:nowrap; }
+      .dl-actions { display:flex;gap:4px; }
+      .dl-action-btn { padding:4px 8px;font-size:10px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);color:#aaa;transition:.2s; }
+      .dl-action-btn:hover { background:rgba(255,100,100,.15);color:#ff6b6b;border-color:rgba(255,100,100,.3); }
+      .dl-footer { padding:12px 20px;border-top:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#666; }
+      .dl-blocked-info { display:flex;align-items:center;gap:8px; }
+      .dl-blocked-count { cursor:pointer;padding:2px 8px;border-radius:6px;transition:.2s; }
+      .dl-blocked-count:hover { background:rgba(255,100,100,.15); }
+      .dl-empty { padding:40px;text-align:center;color:#666; }
+      .dl-options { padding:12px 20px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;flex-wrap:wrap;gap:10px;align-items:center; }
+      .dl-opt-label { font-size:12px;display:flex;align-items:center;gap:6px;color:#aaa;cursor:pointer;padding:4px 10px;background:rgba(255,255,255,.05);border-radius:8px;transition:.2s; }
+      .dl-opt-label:hover { background:rgba(255,255,255,.1); }
+      .dl-opt-label.active { background:rgba(0,164,220,.2);color:#00c8ff; }
+      .dl-opt-label input { margin:0; }
+      .dl-action-btn.unblock { background:rgba(100,200,100,.15);border-color:rgba(100,200,100,.25);color:#8f8; }
+      .dl-action-btn.unblock:hover { background:rgba(100,200,100,.25);color:#afa; }
+    </style>
+    <div class="dl-shell">
+      <div class="dl-header">
+        <div>
+          <div class="dl-title"><span class="md-icon" style="font-size:22px;opacity:.7;">chat</span>弹幕列表</div>
+          <div class="dl-stats">${sourceStatHtml}</div>
+        </div>
+        <div class="dl-toolbar">
+          <input type="search" class="dl-search" id="dlSearch" placeholder="搜索内容/用户ID...">
+          <select class="dl-select" id="dlSourceFilter">
+            <option value="">全部来源</option>
+            ${Object.keys(sourceStats).map(k=>`<option value="${k}">${danmakuSourcePlatforms[k]?.name||k} (${filteredSourceStats[k]||0}/${sourceStats[k]})</option>`).join('')}
+          </select>
+          <select class="dl-select" id="dlModeFilter">
+            <option value="">全部类型</option>
+            <option value="rtl">→ 滚动</option>
+            <option value="ltr">← 逆向</option>
+            <option value="top">顶部</option>
+            <option value="bottom">底部</option>
+          </select>
+          <button class="dl-btn" id="dlClose"><span class="md-icon" style="font-size:16px;">close</span>关闭</button>
+        </div>
+      </div>
+      <div class="dl-options" id="dlOptions">
+        <label class="dl-opt-label" title="显示已屏蔽用户的弹幕"><input type="checkbox" id="dlShowBlocked">显示已屏蔽</label>
+        <label class="dl-opt-label" title="高亮彩色弹幕"><input type="checkbox" id="dlHighlightColor" checked>高亮彩色</label>
+        <span style="flex:1;"></span>
+        <span id="dlBlockedStatus" class="dl-blocked-count" title="点击管理屏蔽列表">已屏蔽 <strong style="color:#ff6b6b;">${currentBlockedUsers.length}</strong> 人</span>
+      </div>
+      <div class="dl-info-bar" id="dlInfoBar">
+        <div id="dlStatsText">
+          总计 <strong>${allComments.length}</strong> 条 | 
+          显示 <strong>${filteredComments.length}</strong> 条 | 
+          已过滤 <strong style="color:#ff6b6b;">${allComments.length - filteredComments.length}</strong> 条
+        </div>
+        <div class="dl-tabs">
+          <div class="dl-tab active" data-filter="all">全部</div>
+          <div class="dl-tab" data-filter="shown">已显示</div>
+          <div class="dl-tab" data-filter="filtered">已过滤</div>
+          <div class="dl-tab" data-filter="blocked">已屏蔽</div>
+        </div>
+      </div>
+      <div class="dl-list-wrap" id="dlListWrap">
+        <table class="dl-table">
+          <thead><tr>
+            <th class="sortable" data-sort="time" style="width:70px;">时间 ▼</th>
+            <th style="min-width:200px;">内容</th>
+            <th style="width:80px;">来源</th>
+            <th style="width:100px;">用户ID</th>
+            <th style="width:60px;">类型</th>
+            <th style="width:60px;">操作</th>
+          </tr></thead>
+          <tbody id="dlBody"></tbody>
+        </table>
+      </div>
+      <div class="dl-footer">
+        <div class="dl-blocked-info">
+          <span>点击用户ID可屏蔽该用户</span>
+          <button class="dl-btn dl-btn-danger" id="dlClearBlocked" style="padding:4px 10px;font-size:11px;display:${currentBlockedUsers.length>0?'inline-flex':'none'};">清除屏蔽 (<span id="dlClearCount">${currentBlockedUsers.length}</span>)</button>
+        </div>
+        <div>点击时间跳转播放 | 限制显示500条</div>
+      </div>
+    </div>`;
+    
+    document.body.appendChild(dialog);
+    
+    const tbody = dialog.querySelector('#dlBody');
+    const searchInput = dialog.querySelector('#dlSearch');
+    const sourceFilter = dialog.querySelector('#dlSourceFilter');
+    const modeFilter = dialog.querySelector('#dlModeFilter');
+    const tabs = dialog.querySelectorAll('.dl-tab');
+    const showBlockedCheckbox = dialog.querySelector('#dlShowBlocked');
+    const highlightColorCheckbox = dialog.querySelector('#dlHighlightColor');
+    let sortKey = 'time', sortAsc = true;
+    let currentTab = 'all';
+    
+    function getModeText(mode){ return {ltr:'← 逆向',rtl:'→ 滚动',top:'顶部',bottom:'底部'}[mode]||mode; }
+    
+    function isBlocked(c){ return currentBlockedUsers.some(b => b.userId === c.userId && b.source === c.source); }
+    
+    // 更新屏蔽人数显示
+    function updateBlockedCount(){
+      const status = dialog.querySelector('#dlBlockedStatus');
+      const clearBtn = dialog.querySelector('#dlClearBlocked');
+      const clearCount = dialog.querySelector('#dlClearCount');
+      if(status) status.innerHTML = `已屏蔽 <strong style="color:#ff6b6b;">${currentBlockedUsers.length}</strong> 人`;
+      if(clearBtn) clearBtn.style.display = currentBlockedUsers.length > 0 ? 'inline-flex' : 'none';
+      if(clearCount) clearCount.textContent = currentBlockedUsers.length;
+    }
+    
+    function render(){
+      const keyword = searchInput.value.trim().toLowerCase();
+      const srcFilter = sourceFilter.value;
+      const modeFilterVal = modeFilter.value;
+      const showBlocked = showBlockedCheckbox?.checked;
+      const highlightColor = highlightColorCheckbox?.checked;
+      
+      let list = allComments.filter(c => {
+        const blocked = isBlocked(c);
+        // 搜索过滤
+        if(keyword && !c.text.toLowerCase().includes(keyword) && !(c.userId||'').toLowerCase().includes(keyword)) return false;
+        // 来源过滤
+        if(srcFilter && c.source !== srcFilter) return false;
+        // 类型过滤
+        if(modeFilterVal && c.mode !== modeFilterVal) return false;
+        // Tab过滤
+        if(currentTab === 'shown' && !filteredIds.has(c.id)) return false;
+        if(currentTab === 'filtered' && filteredIds.has(c.id)) return false;
+        if(currentTab === 'blocked' && !blocked) return false;
+        // 默认不显示已屏蔽用户的弹幕，除非勾选或在已屏蔽tab
+        if(!showBlocked && blocked && currentTab !== 'blocked') return false;
+        return true;
+      });
+      
+      // 排序
+      list.sort((a,b) => {
+        const va = a[sortKey], vb = b[sortKey];
+        if(typeof va === 'number') return sortAsc ? va-vb : vb-va;
+        return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      });
+      
+      // 限制渲染
+      const maxRender = 500;
+      const displayList = list.slice(0, maxRender);
+      
+      if(!displayList.length){
+        tbody.innerHTML = `<tr><td colspan="6" class="dl-empty">没有匹配的弹幕</td></tr>`;
+        return;
+      }
+      
+      tbody.innerHTML = displayList.map(c => {
+        const plat = danmakuSourcePlatforms[c.source] || {name:'未知', color:'#888'};
+        const isFiltered = !filteredIds.has(c.id);
+        const blocked = isBlocked(c);
+        const rowClass = blocked ? 'blocked' : (isFiltered ? 'filtered' : '');
+        const colorStyle = (highlightColor && c.color && c.color !== 'ffffff') ? `color:#${c.color};` : '';
+        const colorBox = c.color ? `<span class="dl-content-color" style="background:#${c.color};"></span>` : '';
+        const userId = c.userId || '-';
+        const shortUserId = userId.length > 12 ? userId.slice(0,10)+'...' : userId;
+        
+        return `<tr class="${rowClass}" data-id="${c.id}">
+          <td class="dl-time" data-time="${c.time}">${formatTime(c.time)}</td>
+          <td class="dl-content" style="${colorStyle}">${colorBox}${c.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td>
+          <td class="dl-source" style="color:${plat.color};">${plat.name}</td>
+          <td class="dl-user" title="${userId}\n点击屏蔽此用户" data-userid="${userId}" data-source="${c.source}">${shortUserId}</td>
+          <td class="dl-mode">${getModeText(c.mode)}</td>
+          <td class="dl-actions">
+            ${blocked ? `<button class="dl-action-btn unblock" data-action="unblock" data-userid="${userId}" data-source="${c.source}" title="取消屏蔽">解除</button>` 
+                      : `<button class="dl-action-btn" data-action="block" data-userid="${userId}" data-source="${c.source}" title="屏蔽此用户">屏蔽</button>`}
+          </td>
+        </tr>`;
+      }).join('');
+      
+      if(list.length > maxRender){
+        tbody.innerHTML += `<tr><td colspan="6" style="padding:16px;text-align:center;color:#666;">仅显示前 ${maxRender} 条，共 ${list.length} 条匹配</td></tr>`;
+      }
+    }
+    
+    render();
+    
+    // 事件绑定
+    searchInput.oninput = debounce(render, 200);
+    sourceFilter.onchange = render;
+    modeFilter.onchange = render;
+    showBlockedCheckbox.onchange = render;
+    highlightColorCheckbox.onchange = render;
+    dialog.querySelector('#dlClose').onclick = () => dialog.remove();
+    
+    // 点击屏蔽人数显示管理弹窗
+    dialog.querySelector('#dlBlockedStatus').onclick = () => {
+      if(currentBlockedUsers.length === 0){
+        showTooltip('暂无屏蔽用户');
+        return;
+      }
+      // 切换到已屏蔽tab
+      tabs.forEach(t => {
+        t.classList.toggle('active', t.dataset.filter === 'blocked');
+      });
+      currentTab = 'blocked';
+      render();
+    };
+    
+    // Tab切换
+    tabs.forEach(tab => {
+      tab.onclick = () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentTab = tab.dataset.filter;
+        render();
+      };
+    });
+    
+    // 表头排序
+    dialog.querySelector('th[data-sort]').onclick = function(){
+      sortAsc = !sortAsc;
+      this.textContent = sortAsc ? '时间 ▼' : '时间 ▲';
+      render();
+    };
+    
+    // 事件委托
+    tbody.addEventListener('click', e => {
+      // 时间跳转
+      const timeCell = e.target.closest('.dl-time');
+      if(timeCell){
+        const t = parseFloat(timeCell.dataset.time);
+        const video = getActiveVideo();
+        if(video && !isNaN(t)){ video.currentTime = t; showTooltip(`跳转到 ${formatTime(t)}`); }
+        return;
+      }
+      
+      // 用户ID点击屏蔽
+      const userCell = e.target.closest('.dl-user');
+      if(userCell){
+        const userId = userCell.dataset.userid;
+        const source = userCell.dataset.source;
+        if(userId && userId !== '-') blockUser(userId, source);
+        return;
+      }
+      
+      // 操作按钮
+      const actionBtn = e.target.closest('.dl-action-btn');
+      if(actionBtn){
+        const action = actionBtn.dataset.action;
+        const userId = actionBtn.dataset.userid;
+        const source = actionBtn.dataset.source;
+        if(action === 'block') blockUser(userId, source);
+        else if(action === 'unblock') unblockUser(userId, source);
+      }
+    });
+    
+    function blockUser(userId, source){
+      if(!userId || userId === '-') return;
+      const exists = currentBlockedUsers.some(b => b.userId === userId && b.source === source);
+      if(!exists){
+        currentBlockedUsers.push({ userId, source, time: Date.now() });
+        localStorage.setItem('danmakuBlockedUsers', JSON.stringify(currentBlockedUsers));
+        showTooltip(`已屏蔽用户: ${userId}`);
+        updateBlockedCount();
+        render();
+        applyUserBlockFilter();
+      }
+    }
+    
+    function unblockUser(userId, source){
+      currentBlockedUsers = currentBlockedUsers.filter(b => !(b.userId === userId && b.source === source));
+      localStorage.setItem('danmakuBlockedUsers', JSON.stringify(currentBlockedUsers));
+      showTooltip(`已解除屏蔽: ${userId}`);
+      updateBlockedCount();
+      render();
+      applyUserBlockFilter();
+    }
+    
+    function applyUserBlockFilter(){
+      // 重新加载弹幕以应用屏蔽
+      if(window.ede.parsedComments){
+        rebuildDanmakuFromParsed();
+      }
+    }
+    
+    // 清除屏蔽列表
+    const clearBtn = dialog.querySelector('#dlClearBlocked');
+    if(clearBtn){
+      clearBtn.onclick = () => {
+        if(confirm(`确定清除所有 ${currentBlockedUsers.length} 个屏蔽用户？`)){
+          currentBlockedUsers = [];
+          localStorage.setItem('danmakuBlockedUsers', '[]');
+          showTooltip('已清除所有屏蔽用户');
+          updateBlockedCount();
+          render();
+          applyUserBlockFilter();
+        }
+      };
+    }
+    
+    dialog.showModal();
+  }
 
   // ===== 统一弹幕中心面板 (分级菜单 + 外显按钮管理) =====
   function showDanmakuCenterDialog(initialSection){
     if(document.getElementById('danmakuCenterDialog')) return;
     const state={
-      font: localStorage.getItem('danmakuFontSize') || (isMobile?fontSizeMobile:fontSizeDesktop),
-      opacity: localStorage.getItem('danmakuTransparencyLevel') || '100',
-      speed: localStorage.getItem('danmakuSpeed') || '200',
-      filterLevel: localStorage.getItem('danmakuFilterLevel') || '0',
-      timeline: (localStorage.getItem('danmakuTimelineEnabled') !== 'false'),
-      chConvert: localStorage.getItem('chConvert') || '1',
+      font: StorageManager.get('danmakuFontSize', isMobile?fontSizeMobile:fontSizeDesktop),
+      opacity: StorageManager.get('danmakuTransparencyLevel', '100'),
+      speed: StorageManager.get('danmakuSpeed', '200'),
+      filterLevel: StorageManager.get('danmakuFilterLevel', '0'),
+      timeline: (StorageManager.get('danmakuTimelineEnabled', 'true') !== 'false'),
+      chConvert: StorageManager.get('chConvert', '1'),
       compact: window.ede.compactUI,
       external: [...(window.ede.externalButtons||[])]
     };
-  const featureMap={ filteringDanmaku:'过滤等级', danmakuSettings:'弹幕设置', switchDanmakuInfo:'信息显示', searchDanmaku:'搜索', danmakuHeatmap:'热度图', showDanmakuLog:'日志' };
+  const featureMap={ filteringDanmaku:'过滤等级', danmakuSettings:'弹幕设置', switchDanmakuInfo:'信息显示', searchDanmaku:'搜索', danmakuHeatmap:'热度图', danmakuList:'弹幕列表', showDanmakuLog:'日志' };
     const navItems=[
       {id:'overview',label:'概览'},
       {id:'appearance',label:'外观'},
@@ -831,22 +1530,32 @@
       .badge{display:inline-block;padding:2px 6px;font-size:11px;border-radius:4px;background:#00a4dc22;color:#00c8ff;margin-left:6px;}
       .kv{font-size:12px;line-height:1.4;white-space:pre-line;}
       .feature-list{display:flex;flex-wrap:wrap;gap:6px;}
-      .feat-btn{padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.09);cursor:pointer;font-size:12px;}
-      .feat-btn:hover{background:rgba(255,255,255,.15);}
+      .feat-btn{padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.09);cursor:pointer;font-size:12px;border:1px solid rgba(255,255,255,.1);transition:.18s;}
+      .feat-btn:hover{background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.2);}
       .ext-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;}
-      .ext-item{background:rgba(255,255,255,.07);padding:6px 8px;border-radius:8px;display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;}
-      .ext-item input{margin:0;}
+      .ext-item{background:rgba(255,255,255,.07);padding:8px 10px;border-radius:8px;display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;border:1px solid rgba(255,255,255,.1);transition:.18s;color:#ddd;}
+      .ext-item:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.18);color:#fff;}
+      .ext-item input{margin:0;width:14px;height:14px;accent-color:#00a4dc;}
+      .ext-item input:checked + *{color:#00c8ff;}
       .note{font-size:11px;opacity:.65;line-height:1.5;}
       .toolbar-small{display:flex;gap:6px;}
-      .toolbar-small button{background:rgba(255,255,255,.08);border:0;color:#fff;padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit;font-size:12px;}
+      .toolbar-small button{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);color:#fff;padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit;font-size:12px;transition:.18s;}
       .toolbar-small button:hover{background:rgba(255,255,255,.15);}
+      .toolbar-small .dc-close-btn{background:rgba(255,100,100,.15);border-color:rgba(255,100,100,.25);}
+      .toolbar-small .dc-close-btn:hover{background:rgba(255,100,100,.3);border-color:rgba(255,100,100,.4);}
+      .icon-btn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;padding:4px 10px;font-size:12px;transition:.18s;}
+      .icon-btn:hover{background:rgba(255,255,255,.22);} 
+      .icon-btn:active{transform:scale(.9);} 
+      .icon-btn .md-icon{font-size:18px;}
+      .mini-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#ddd;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:.18s;}
+      .mini-btn:hover{background:rgba(255,255,255,.15);color:#fff;}
       @keyframes fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
       </style>
       <div class="dc-nav" id="dcNav"></div>
       <div class="dc-body">
         <div class="dc-header"><div style="display:flex;align-items:center;gap:10px;">
           <strong style="font-size:15px;display:flex;align-items:center;gap:6px;">弹幕中心 <span class='badge'>v${EDE_VERSION}</span></strong>
-        </div><div class="toolbar-small"><button id="dcReload" title="重载"><span class="md-icon">autorenew</span></button><button id="dcClose" title="关闭"><span class="md-icon">close</span></button></div></div>
+        </div><div class="toolbar-small"><button id="dcReload" title="重载弹幕"><span class="md-icon">autorenew</span></button><button id="dcClose" class="dc-close-btn" title="关闭"><span class="md-icon">close</span></button></div></div>
         <div class="dc-content" id="dcContent">
           ${navItems.map(n=>`<section class='dc-section' id='sec-${n.id}' data-sec='${n.id}'></section>`).join('')}
         </div>
@@ -862,9 +1571,21 @@
     const secBuilt={};
     const qs=id=>dialog.querySelector(id);
 
-    function paintRangeInput(r,color='#00a4dc'){ if(!r) return; const v=(r.value-r.min)/(r.max-r.min)*100; r.style.background=`linear-gradient(to right, ${color} 0%, ${color} ${v}%, #444 ${v}%, #444 100%)`; }
-
-    function buildOverview(){ secBuilt.overview=true; const epi=window.ede.episode_info; const sec=qs('#sec-overview'); const cntCur=window.ede?.danmaku?.comments?.length||0; const cntOrig=window.ede.originalCount||0; sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><h4>状态</h4><div class='kv' id='dcStatusKV'></div><div class='note'>实时刷新，显示匹配 / 过滤 / 缓存与代理状态。</div></div><div class='dc-card'><h4>操作</h4><div class='feature-list'><div class='feat-btn' id='ovSearch'>搜索</div><div class='feat-btn' id='ovHeatmap'>热度图</div><div class='feat-btn' id='ovLog'>日志</div><div class='feat-btn' id='ovReload'>重载弹幕</div></div><div class='note'>常用功能快速入口。</div></div></div>`; const status=sec.querySelector('#dcStatusKV'); function refresh(){ status.textContent=`匹配: ${epi? (epi.animeTitle+(epi.episodeTitle?(' - '+epi.episodeTitle):'')):'未匹配'}\n弹幕: ${cntCur}/${cntOrig} (过滤:${localStorage.getItem('danmakuFilterLevel')||0})\n缓存: ${window.ede.cacheEnabled?'启用':'关闭'}  代理:${window.ede.customProxyServer||'默认'}\n外显按钮: ${(window.ede.externalButtons||[]).length}`; } refresh(); sec.querySelector('#ovSearch').onclick=showSearchDialog; sec.querySelector('#ovHeatmap').onclick=showHeatmapDialog; sec.querySelector('#ovLog').onclick=showLogDialog; sec.querySelector('#ovReload').onclick=()=>reloadDanmaku('reload',true); }
+    function buildOverview(){ secBuilt.overview=true; const epi=window.ede.episode_info; const sec=qs('#sec-overview'); const cntCur=window.ede?.danmaku?.comments?.length||0; const cntOrig=window.ede.originalCount||0;
+      const proxyText = window.ede.customProxyServer ? '自定义' : '默认';
+      sec.innerHTML=`<div class='dc-grid'>
+        <div class='dc-card'><h4>状态</h4><div class='kv' id='dcStatusKV'></div><div class='note'>实时刷新，显示匹配 / 过滤 / 缓存与代理状态。</div></div>
+        <div class='dc-card'><h4>操作</h4><div class='feature-list'><div class='feat-btn' id='ovSearch'>搜索</div><div class='feat-btn' id='ovHeatmap'>热度图</div><div class='feat-btn' id='ovDanmakuList'>弹幕列表</div><div class='feat-btn' id='ovLog'>日志</div><div class='feat-btn' id='ovReload'>重载</div></div><div class='note'>常用功能快速入口。</div></div>
+      </div>`;
+      const status=sec.querySelector('#dcStatusKV');
+      function refresh(){ status.textContent=`匹配: ${epi? (epi.animeTitle+(epi.episodeTitle?(' - '+epi.episodeTitle):'')):'未匹配'}\n弹幕: ${cntCur}/${cntOrig} (过滤:${localStorage.getItem('danmakuFilterLevel')||0})\n缓存: ${window.ede.cacheEnabled?'启用':'关闭'}  代理: ${proxyText}\n外显按钮: ${(window.ede.externalButtons||[]).length}`; }
+      refresh();
+      sec.querySelector('#ovSearch').onclick=showSearchDialog;
+      sec.querySelector('#ovHeatmap').onclick=showHeatmapDialog;
+      sec.querySelector('#ovDanmakuList').onclick=showDanmakuListDialog;
+      sec.querySelector('#ovLog').onclick=showLogDialog;
+      sec.querySelector('#ovReload').onclick=()=>reloadDanmaku('reload',true);
+    }
 
     function buildAppearance(){
       secBuilt.appearance=true; const sec=qs('#sec-appearance');
@@ -874,6 +1595,7 @@
         ${makeLine('apOpacity','不透明',0,100,1,state.opacity,'%')}
   ${makeLine('apSpeed','速度',60,300,5,state.speed,'')}
   ${makeLine('apTimelineOp','进度透明',10,100,1, localStorage.getItem('edeTimelineOpacity')||85, '%')}
+  ${makeLine('apHeatmapOp','热度图透明',10,100,5, localStorage.getItem('edeHeatmapOpacity')||80, '%')}
         <div class='toggle-line' style='display:flex;flex-wrap:wrap;gap:1em;margin-top:4px;'><label style='font-size:12px;display:flex;align-items:center;gap:4px;'><input type='checkbox' id='apTimeline' ${state.timeline?'checked':''}> 热度轨迹</label><label style='font-size:12px;display:flex;align-items:center;gap:4px;'><input type='checkbox' id='apInfo' ${window.ede.showDanmakuInfo?'checked':''}> 信息栏</label></div>
         <div class='note'>数值实时显示；速度越大滚动越快。</div></div></div>`;
       const bindSlider=(id,cb)=>{ const el=sec.querySelector('#'+id); const num=sec.querySelector('#'+id+'Num'); const paint=(r)=>{ paintRangeInput(r); if(num) num.textContent=r.value; }; paint(el); el.addEventListener('input',e=>{ cb(e.target.value); paint(e.target); }); };
@@ -881,66 +1603,218 @@
       bindSlider('apOpacity',v=>{ localStorage.setItem('danmakuTransparencyLevel', v); globalOpacity=v/100; });
   bindSlider('apSpeed',v=>{ localStorage.setItem('danmakuSpeed', v); if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
   bindSlider('apTimelineOp',v=>{ localStorage.setItem('edeTimelineOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-pbp-unplayed-op', val); });
+      bindSlider('apHeatmapOp',v=>{ localStorage.setItem('edeHeatmapOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-heatmap-opacity', val); });
       sec.querySelector('#apTimeline').onchange=e=>{ localStorage.setItem('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
       sec.querySelector('#apInfo').onchange=e=>{ window.ede.showDanmakuInfo=e.target.checked; localStorage.setItem('showDanmakuInfo', e.target.checked); const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display=e.target.checked?'block':'none'; const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText= info_switch_icons[e.target.checked?1:0]; };
-  const resetBtn=sec.querySelector('#apReset'); if(resetBtn){ resetBtn.onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; const defaults={apFont:defF,apOpacity:100,apSpeed:200,apTimelineOp:85}; Object.entries(defaults).forEach(([id,val])=>{ const el=sec.querySelector('#'+id); if(!el) return; el.value=val; el.dispatchEvent(new Event('input')); }); sec.querySelector('#apTimeline').checked=true; sec.querySelector('#apTimeline').dispatchEvent(new Event('change')); }; }
+  const resetBtn=sec.querySelector('#apReset'); if(resetBtn){ resetBtn.onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; const defaults={apFont:defF,apOpacity:100,apSpeed:200,apTimelineOp:85,apHeatmapOp:80}; Object.entries(defaults).forEach(([id,val])=>{ const el=sec.querySelector('#'+id); if(!el) return; el.value=val; el.dispatchEvent(new Event('input')); }); sec.querySelector('#apTimeline').checked=true; sec.querySelector('#apTimeline').dispatchEvent(new Event('change')); }; }
     }
-  // (去重) 保留前一个 buildAppearance 版本，删除重复定义
 
-    function buildFilter(){ secBuilt.filter=true; const sec=qs('#sec-filter'); // 关键词 chips
-      const words=window.ede.filterWords||[]; const typeSelected = localStorage.getItem('danmakuTypeFilter')? JSON.parse(localStorage.getItem('danmakuTypeFilter')):[];
-      const curLevel = parseInt(localStorage.getItem('danmakuFilterLevel')||'0');
-      sec.innerHTML=`<div class='dc-grid'>
-        <div class='dc-card'>
-          <h4 style="display:flex;align-items:center;justify-content:space-between;gap:8px;">等级
+    function buildFilter(){ secBuilt.filter=true; const sec=qs('#sec-filter');
+      const words=window.ede.filterWords||[];
+      const typeSelected = StorageManager.get('danmakuTypeFilter', []);
+      const sourceSelected = StorageManager.get('danmakuSourceFilter', []);
+      const curLevel = parseInt(StorageManager.get('danmakuFilterLevel', '0')||'0');
+      
+      // 统计当前弹幕来源分布
+      const sourceStats = {};
+      if(window.ede.parsedComments){
+        for(const c of window.ede.parsedComments){
+          const src = c.source || 'DanDanPlay';
+          sourceStats[src] = (sourceStats[src]||0) + 1;
+        }
+      }
+      
+      sec.innerHTML=`<div class='dc-filter-grid'>
+        <!-- 第一行: 密度等级 -->
+        <div class='dc-card dc-card-wide'>
+          <h4 style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span style="display:flex;align-items:center;gap:6px;"><span class="md-icon" style="font-size:18px;opacity:.7;">tune</span>密度等级</span>
             <button id='fltToggle' class='mini-btn' title='启用/关闭过滤'>${curLevel>0?'关闭':'开启'}</button>
           </h4>
-          <div class='range-line'><span id='fltLevelLabel'>级别:${curLevel}</span><input type='range' id='fltLevel' min='0' max='4' step='1' value='${curLevel}'></div>
-          <div class='note'>0关闭 4最强，可用按钮一键${curLevel>0?'关闭':'恢复'}。</div>
+          <div class='range-line'><span id='fltLevelLabel' class='level-badge level-${curLevel}'>Lv.${curLevel}</span><input type='range' id='fltLevel' min='0' max='4' step='1' value='${curLevel}'></div>
+          <div class='note'>0=关闭，1-4逐级增强。高等级会限制每秒弹幕数量，垂直方向自动转为滚动弹幕。</div>
         </div>
+        
+        <!-- 第二行: 屏蔽类型 -->
         <div class='dc-card'>
-          <h4>类型</h4>
-          <div id='fltTypes' class='chip-wrap'></div>
-          <div class='note'>选择要过滤掉的类型。</div>
+          <h4><span class="md-icon" style="font-size:18px;opacity:.7;margin-right:6px;">block</span>屏蔽类型</h4>
+          <div id='fltTypes' class='chip-wrap-v'></div>
+          <div class='note'>勾选的类型将被过滤。</div>
         </div>
+        
+        <!-- 第三行: 屏蔽来源 -->
         <div class='dc-card'>
-          <h4 style='display:flex;align-items:center;justify-content:space-between;'>关键词 <span style='font-size:11px;opacity:.6;'>${words.length} 条</span></h4>
+          <h4><span class="md-icon" style="font-size:18px;opacity:.7;margin-right:6px;">public</span>屏蔽来源平台</h4>
+          <div id='fltSources' class='source-grid'></div>
+          <div class='note'>勾选的来源平台弹幕将被过滤。括号内为当前弹幕数。</div>
+        </div>
+        
+        <!-- 第四行: 关键词 -->
+        <div class='dc-card dc-card-wide'>
+          <h4 style='display:flex;align-items:center;justify-content:space-between;'>
+            <span><span class="md-icon" style="font-size:18px;opacity:.7;margin-right:6px;">text_fields</span>屏蔽关键词</span>
+            <span class='kw-count'>${words.length} 条</span>
+          </h4>
           <div class='kw-input-row'>
-            <input id='fltWordInput' class='kw-input' placeholder='输入关键词 后回车'>
+            <input id='fltWordInput' class='kw-input' placeholder='输入关键词后回车添加，支持正则如 /test/i'>
             <button id='fltAdd' class='icon-btn' title='添加'><span class='md-icon'>add</span></button>
           </div>
           <div id='fltWordList' class='chips-area'></div>
-          <div class='note'>命中即过滤，不区分大小写。点击 × 删除。</div>
+          <div class='note'>命中即过滤，不区分大小写。支持正则表达式（以/开头和结尾）。</div>
         </div>
       </div>`;
-      // 注入一次样式
+      
+      // 注入优化后的样式
       if(!document.getElementById('ede-filter-style')){
         const st=document.createElement('style'); st.id='ede-filter-style'; st.textContent=`
-        .kw-input-row{display:flex;gap:6px;align-items:center;background:rgba(255,255,255,.07);padding:4px 8px;border-radius:8px;}
-        .kw-input{flex:1;background:transparent;border:0;color:#fff;font:inherit;padding:4px 2px;outline:none;min-width:60px;}
-        .icon-btn,.mini-btn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;padding:4px 10px;font-size:12px;transition:.18s;}
-        .icon-btn:hover,.mini-btn:hover{background:rgba(255,255,255,.22);} .icon-btn:active,.mini-btn:active{transform:scale(.9);} .icon-btn .md-icon{font-size:18px;}
-        .chips-area{display:flex;flex-wrap:wrap;gap:6px;max-height:140px;overflow:auto;margin-top:6px;}
+        .dc-filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+        .dc-card-wide{grid-column:1/-1;}
+        .kw-input-row{display:flex;gap:6px;align-items:center;background:rgba(255,255,255,.07);padding:6px 10px;border-radius:10px;margin-bottom:8px;}
+        .kw-input{flex:1;background:transparent;border:0;color:#fff;font:inherit;padding:4px 2px;outline:none;min-width:100px;}
+        .kw-count{font-size:11px;opacity:.6;background:rgba(255,255,255,.1);padding:2px 8px;border-radius:10px;}
+        .chips-area{display:flex;flex-wrap:wrap;gap:6px;max-height:120px;overflow:auto;}
         .chip{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;background:#00a4dc33;color:#00d2ff;font-size:12px;border-radius:16px;line-height:1;}
+        .chip.regex{background:#ff990033;color:#ffbb55;}
         .chip button{background:transparent;border:0;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;}
         .chip button:hover{color:#fff;}
-        .chip-wrap{display:flex;flex-wrap:wrap;gap:6px;}
-        .chip-wrap label{background:rgba(255,255,255,.08);padding:4px 10px;border-radius:16px;font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;}
-        .chip-wrap label:hover{background:rgba(255,255,255,.14);} .chip-wrap input{margin:0;}
+        .chip-wrap-v{display:flex;flex-direction:column;gap:6px;}
+        .chip-wrap-v label{background:rgba(255,255,255,.06);padding:8px 12px;border-radius:10px;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;transition:.15s;}
+        .chip-wrap-v label:hover{background:rgba(255,255,255,.12);}
+        .chip-wrap-v label.checked{background:rgba(0,164,220,.2);border:1px solid rgba(0,164,220,.4);}
+        .chip-wrap-v input{margin:0;width:16px;height:16px;}
+        .source-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;}
+        .source-item{background:rgba(255,255,255,.06);padding:8px 10px;border-radius:10px;font-size:12px;display:flex;align-items:center;gap:8px;cursor:pointer;transition:.15s;border:1px solid transparent;}
+        .source-item:hover{background:rgba(255,255,255,.12);}
+        .source-item.checked{background:rgba(255,100,100,.15);border-color:rgba(255,100,100,.3);}
+        .source-item input{margin:0;width:14px;height:14px;}
+        .source-item .src-color{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+        .source-item .src-count{margin-left:auto;opacity:.5;font-size:11px;}
+        .level-badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;min-width:50px;text-align:center;}
+        .level-badge.level-0{background:#555;color:#aaa;}
+        .level-badge.level-1{background:#2d7d46;color:#8eff8e;}
+        .level-badge.level-2{background:#6b6b00;color:#ffff66;}
+        .level-badge.level-3{background:#8b5500;color:#ffcc66;}
+        .level-badge.level-4{background:#8b2222;color:#ff9999;}
         `; document.head.appendChild(st);
       }
-  const flR=sec.querySelector('#fltLevel'); paintRangeInput(flR); const label=sec.querySelector('#fltLevelLabel'); const updateLevel=()=>{ label.textContent='级别:'+flR.value; localStorage.setItem('danmakuFilterLevel', flR.value); onFilterConfigChanged(); paintRangeInput(flR); const tb=document.querySelector('#filteringDanmaku .md-icon'); if(tb){ const lv=parseInt(localStorage.getItem('danmakuFilterLevel')||0); tb.innerText=filter_icons[lv]; } }; flR.oninput=debounce(updateLevel,120);
+      
+      // 密度等级滑块
+      const flR=sec.querySelector('#fltLevel'); paintRangeInput(flR); 
+      const label=sec.querySelector('#fltLevelLabel'); 
+      const updateLevel=()=>{ 
+        const lv=flR.value;
+        label.textContent='Lv.'+lv;
+        label.className='level-badge level-'+lv;
+        localStorage.setItem('danmakuFilterLevel', lv); 
+        onFilterConfigChanged(); 
+        paintRangeInput(flR); 
+        const tb=document.querySelector('#filteringDanmaku .md-icon'); 
+        if(tb) tb.innerText=filter_icons[parseInt(lv)]; 
+      }; 
+      flR.oninput=debounce(updateLevel,120);
+      
       // Toggle 按钮
-  const toggleBtn=sec.querySelector('#fltToggle'); if(toggleBtn){ toggleBtn.onclick=()=>{ const v=parseInt(localStorage.getItem('danmakuFilterLevel')||'0'); if(v>0){ localStorage.setItem('danmakuLastFilterLevel', v); localStorage.setItem('danmakuFilterLevel', 0); flR.value=0; } else { const last=parseInt(localStorage.getItem('danmakuLastFilterLevel')||'2')||2; flR.value= last; localStorage.setItem('danmakuFilterLevel', last); } updateLevel(); toggleBtn.textContent = (parseInt(localStorage.getItem('danmakuFilterLevel')||'0')>0)?'关闭':'开启'; const tb=document.querySelector('#filteringDanmaku .md-icon'); if(tb){ const lv=parseInt(localStorage.getItem('danmakuFilterLevel')||0); tb.innerText=filter_icons[lv]; } } }
-      // 类型
-      const typeWrap=sec.querySelector('#fltTypes'); Object.values(danmakuTypeFilterOpts).forEach(opt=>{ const chip=document.createElement('label'); chip.innerHTML=`<input type='checkbox' ${typeSelected.includes(opt.id)?'checked':''} data-val='${opt.id}'>${opt.name}`; chip.querySelector('input').onchange=e=>{ let arr= localStorage.getItem('danmakuTypeFilter')? JSON.parse(localStorage.getItem('danmakuTypeFilter')):[]; if(e.target.checked && !arr.includes(opt.id)) arr.push(opt.id); else if(!e.target.checked) arr=arr.filter(x=>x!==opt.id); localStorage.setItem('danmakuTypeFilter', JSON.stringify(arr)); onFilterConfigChanged(); }; typeWrap.appendChild(chip); });
+      const toggleBtn=sec.querySelector('#fltToggle'); 
+      if(toggleBtn){ 
+        toggleBtn.onclick=()=>{ 
+          const v=parseInt(StorageManager.get('danmakuFilterLevel', '0')||'0'); 
+          if(v>0){ 
+            StorageManager.set('danmakuLastFilterLevel', v); 
+            StorageManager.set('danmakuFilterLevel', 0); 
+            flR.value=0; 
+          } else { 
+            const last=parseInt(StorageManager.get('danmakuLastFilterLevel', '2')||'2')||2; 
+            flR.value=last; 
+            StorageManager.set('danmakuFilterLevel', last); 
+          } 
+          updateLevel(); 
+          toggleBtn.textContent = (parseInt(StorageManager.get('danmakuFilterLevel', '0')||'0')>0)?'关闭':'开启'; 
+        }; 
+      }
+      
+      // 屏蔽类型
+      const typeWrap=sec.querySelector('#fltTypes'); 
+      const typeDescMap = {
+        bottom: '固定在底部的弹幕',
+        top: '固定在顶部的弹幕',
+        ltr: '从左向右移动的弹幕',
+        rolling: '所有滚动弹幕(左右)',
+        onlyWhite: '过滤彩色，只保留白色',
+        emoji: '包含emoji表情的弹幕'
+      };
+      Object.values(danmakuTypeFilterOpts).forEach(opt=>{ 
+        const lbl=document.createElement('label'); 
+        lbl.className = typeSelected.includes(opt.id) ? 'checked' : '';
+        lbl.innerHTML=`<input type='checkbox' ${typeSelected.includes(opt.id)?'checked':''} data-val='${opt.id}'><span>${opt.name}</span><span style="margin-left:auto;opacity:.5;font-size:11px;">${typeDescMap[opt.id]||''}</span>`;
+        lbl.querySelector('input').onchange=e=>{ 
+          let arr= localStorage.getItem('danmakuTypeFilter')? JSON.parse(localStorage.getItem('danmakuTypeFilter')):[]; 
+          if(e.target.checked && !arr.includes(opt.id)) arr.push(opt.id); 
+          else if(!e.target.checked) arr=arr.filter(x=>x!==opt.id); 
+          StorageManager.set('danmakuTypeFilter', arr); 
+          lbl.classList.toggle('checked', e.target.checked);
+          onFilterConfigChanged(); 
+        }; 
+        typeWrap.appendChild(lbl); 
+      });
+      
+      // 屏蔽来源平台
+      const sourceWrap=sec.querySelector('#fltSources');
+      Object.values(danmakuSourcePlatforms).forEach(plat=>{
+        const count = sourceStats[plat.id] || 0;
+        const item=document.createElement('label');
+        item.className = 'source-item' + (sourceSelected.includes(plat.id) ? ' checked' : '');
+        item.innerHTML=`<input type='checkbox' ${sourceSelected.includes(plat.id)?'checked':''} data-val='${plat.id}'><span class='src-color' style='background:${plat.color}'></span><span>${plat.name}</span><span class='src-count'>(${count})</span>`;
+        item.querySelector('input').onchange=e=>{
+          let arr = StorageManager.get('danmakuSourceFilter', []);
+          if(e.target.checked && !arr.includes(plat.id)) arr.push(plat.id);
+          else if(!e.target.checked) arr=arr.filter(x=>x!==plat.id);
+          StorageManager.set('danmakuSourceFilter', arr);
+          item.classList.toggle('checked', e.target.checked);
+          onFilterConfigChanged();
+        };
+        sourceWrap.appendChild(item);
+      });
+      
       // 关键词
-      const listEl=sec.querySelector('#fltWordList'); function renderWords(){ listEl.innerHTML=''; (window.ede.filterWords||[]).forEach(w=>{ const chip=document.createElement('div'); chip.className='chip'; chip.innerHTML=`<span>${w}</span><button data-del='${w}' title='删除'>×</button>`; chip.querySelector('button').onclick=()=>{ window.ede.filterWords=window.ede.filterWords.filter(x=>x!==w); localStorage.setItem('danmakuFilterWords', JSON.stringify(window.ede.filterWords)); compileFilterResources(); onFilterConfigChanged(); renderWords(); }; listEl.appendChild(chip); }); }
-      renderWords(); const addWord=()=>{ const inp=sec.querySelector('#fltWordInput'); const v=inp.value.trim(); if(v && !(window.ede.filterWords||[]).includes(v)){ window.ede.filterWords.push(v); localStorage.setItem('danmakuFilterWords', JSON.stringify(window.ede.filterWords)); compileFilterResources(); onFilterConfigChanged(); renderWords(); inp.value=''; } };
-      sec.querySelector('#fltAdd').onclick=addWord; sec.querySelector('#fltWordInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addWord(); } });
+      const listEl=sec.querySelector('#fltWordList'); 
+      const countEl=sec.querySelector('.kw-count');
+      function renderWords(){ 
+        listEl.innerHTML=''; 
+        const words = window.ede.filterWords||[];
+        if(countEl) countEl.textContent = words.length + ' 条';
+        words.forEach(w=>{ 
+          const isRegex = w.startsWith('/') && (w.lastIndexOf('/')>0);
+          const chip=document.createElement('div'); 
+          chip.className='chip' + (isRegex?' regex':''); 
+          chip.innerHTML=`<span>${w}</span><button data-del='${w}' title='删除'>×</button>`; 
+          chip.querySelector('button').onclick=()=>{ 
+            window.ede.filterWords=window.ede.filterWords.filter(x=>x!==w); 
+            StorageManager.set('danmakuFilterWords', window.ede.filterWords); 
+            compileFilterResources(); 
+            onFilterConfigChanged(); 
+            renderWords(); 
+          }; 
+          listEl.appendChild(chip); 
+        }); 
+      }
+      renderWords(); 
+      const addWord=()=>{ 
+        const inp=sec.querySelector('#fltWordInput'); 
+        const v=inp.value.trim(); 
+        if(v && !(window.ede.filterWords||[]).includes(v)){ 
+          window.ede.filterWords.push(v); 
+          StorageManager.set('danmakuFilterWords', window.ede.filterWords); 
+          compileFilterResources(); 
+          onFilterConfigChanged(); 
+          renderWords(); 
+          inp.value=''; 
+        } 
+      };
+      sec.querySelector('#fltAdd').onclick=addWord; 
+      sec.querySelector('#fltWordInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addWord(); } });
     }
 
-    function buildFunctions(){ secBuilt.functions=true; const sec=qs('#sec-functions'); sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><h4>快速</h4><div class='feature-list'><div class='feat-btn' id='fnSearch'>搜索</div><div class='feat-btn' id='fnHeatmap'>热度图</div><div class='feat-btn' id='fnLog'>日志</div><div class='feat-btn' id='fnReload'>重载</div></div><div class='note'>集中常用工具。</div></div><div class='dc-card'><h4>弹幕</h4><div class='feature-list'><div class='feat-btn' id='fnInfo'>信息栏 ${window.ede.showDanmakuInfo?'关':'开'}</div><div class='feat-btn' id='fnSwitch'>显示/隐藏</div></div><div class='note'>快速开关。</div></div></div>`; const bind=(id,fn)=>sec.querySelector(id).onclick=fn; bind('#fnSearch',showSearchDialog); bind('#fnHeatmap',showHeatmapDialog); bind('#fnLog',showLogDialog); bind('#fnReload',()=>reloadDanmaku('reload',true)); bind('#fnInfo',()=>{ window.ede.showDanmakuInfo=!window.ede.showDanmakuInfo; localStorage.setItem('showDanmakuInfo', window.ede.showDanmakuInfo); const infoBtn=sec.querySelector('#fnInfo'); if(infoBtn) infoBtn.textContent='信息栏 '+(window.ede.showDanmakuInfo?'关':'开'); const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display=window.ede.showDanmakuInfo?'block':'none'; const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText= info_switch_icons[window.ede.showDanmakuInfo?1:0]; }); bind('#fnSwitch',()=>{ document.getElementById('displayDanmaku')?.click(); }); }
+    function buildFunctions(){ secBuilt.functions=true; const sec=qs('#sec-functions'); sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><h4>快速</h4><div class='feature-list'><div class='feat-btn' id='fnSearch'>搜索</div><div class='feat-btn' id='fnHeatmap'>热度图</div><div class='feat-btn' id='fnLog'>日志</div><div class='feat-btn' id='fnReload'>重载</div></div><div class='note'>集中常用工具。</div></div><div class='dc-card'><h4>弹幕</h4><div class='feature-list'><div class='feat-btn' id='fnList'>弹幕列表</div><div class='feat-btn' id='fnInfo'>信息栏 ${window.ede.showDanmakuInfo?'关':'开'}</div><div class='feat-btn' id='fnSwitch'>显示/隐藏</div></div><div class='note'>查看与开关。</div></div></div>`; const bind=(id,fn)=>sec.querySelector(id).onclick=fn; bind('#fnSearch',showSearchDialog); bind('#fnHeatmap',showHeatmapDialog); bind('#fnLog',showLogDialog); bind('#fnReload',()=>reloadDanmaku('reload',true)); bind('#fnList',showDanmakuListDialog); bind('#fnInfo',()=>{ window.ede.showDanmakuInfo=!window.ede.showDanmakuInfo; localStorage.setItem('showDanmakuInfo', window.ede.showDanmakuInfo); const infoBtn=sec.querySelector('#fnInfo'); if(infoBtn) infoBtn.textContent='信息栏 '+(window.ede.showDanmakuInfo?'关':'开'); const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display=window.ede.showDanmakuInfo?'block':'none'; const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText= info_switch_icons[window.ede.showDanmakuInfo?1:0]; }); bind('#fnSwitch',()=>{ document.getElementById('displayDanmaku')?.click(); }); }
 
     function buildLayout(){
       secBuilt.layout=true;
@@ -969,19 +1843,33 @@
         const st=document.createElement('style'); st.id='ede-layout-style'; st.textContent=`#sec-layout .bo-item{display:flex;align-items:center;gap:8px;padding:8px 10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:8px;cursor:move;font-size:12px;}#sec-layout .bo-item.dragging{opacity:.5}#sec-layout .bo-item.over{outline:2px dashed #00a4dc;}#sec-layout .bo-item .md-icon{font-size:18px;opacity:.7}`; document.head.appendChild(st);
       }
       // 复选控制
-      sec.querySelectorAll('[data-ext]').forEach(inp=>{ inp.onchange=e=>{ const id=e.target.getAttribute('data-ext'); if(e.target.checked && !state.external.includes(id)) state.external.push(id); else if(!e.target.checked) state.external=state.external.filter(x=>x!==id); localStorage.setItem('danmakuExternalButtons', JSON.stringify(state.external)); window.ede.externalButtons=[...state.external]; const bar=document.getElementById('danmakuCtr'); if(bar){ bar.remove(); setTimeout(()=>initUI(),0); } }; });
+      sec.querySelectorAll('[data-ext]').forEach(inp=>{ inp.onchange=e=>{ const id=e.target.getAttribute('data-ext'); if(e.target.checked && !state.external.includes(id)) state.external.push(id); else if(!e.target.checked) state.external=state.external.filter(x=>x!==id); localStorage.setItem('danmakuExternalButtons', JSON.stringify(state.external)); window.ede.externalButtons=[...state.external]; rebuildToolbar(); }; });
       // 拖拽排序
       const boList=sec.querySelector('#boList'); let dragEl=null; boList.querySelectorAll('.bo-item').forEach(item=>{ item.addEventListener('dragstart',e=>{ dragEl=item; item.classList.add('dragging'); }); item.addEventListener('dragend',()=>{ dragEl && dragEl.classList.remove('dragging'); boList.querySelectorAll('.bo-item').forEach(i=>i.classList.remove('over')); dragEl=null; }); item.addEventListener('dragover',e=>{ e.preventDefault(); if(item===dragEl) return; item.classList.add('over'); }); item.addEventListener('dragleave',()=>item.classList.remove('over')); item.addEventListener('drop',e=>{ e.preventDefault(); if(item===dragEl) return; const children=[...boList.children]; const from=children.indexOf(dragEl); const to=children.indexOf(item); if(from<0||to<0) return; if(from<to) boList.insertBefore(dragEl, item.nextSibling); else boList.insertBefore(dragEl, item); boList.querySelectorAll('.bo-item').forEach(i=>i.classList.remove('over')); // 更新顺序
-        const newOrder=['displayDanmaku', ...[...boList.children].map(c=>c.getAttribute('data-id')), 'danmakuCenter']; window.ede.buttonOrder=newOrder; localStorage.setItem('danmakuButtonOrder', JSON.stringify(newOrder)); const ctr=document.getElementById('danmakuCtr'); if(ctr){ ctr.remove(); initUI(); } showTooltip('顺序已更新'); }); });
+        const newOrder=['displayDanmaku', ...[...boList.children].map(c=>c.getAttribute('data-id')), 'danmakuCenter']; window.ede.buttonOrder=newOrder; localStorage.setItem('danmakuButtonOrder', JSON.stringify(newOrder)); rebuildToolbar(); showTooltip('顺序已更新'); }); });
       // 重置
-      sec.querySelector('#boReset').onclick=()=>{ const def=['displayDanmaku','filteringDanmaku','danmakuSettings','switchDanmakuInfo','searchDanmaku','showDanmakuLog','danmakuHeatmap','danmakuCenter']; window.ede.buttonOrder=def; localStorage.setItem('danmakuButtonOrder', JSON.stringify(def)); buildLayout(); const ctr=document.getElementById('danmakuCtr'); if(ctr){ ctr.remove(); initUI(); } showTooltip('已恢复默认顺序'); };
+      sec.querySelector('#boReset').onclick=()=>{ const def=['displayDanmaku','filteringDanmaku','danmakuSettings','switchDanmakuInfo','searchDanmaku','showDanmakuLog','danmakuHeatmap','danmakuList','danmakuCenter']; window.ede.buttonOrder=def; localStorage.setItem('danmakuButtonOrder', JSON.stringify(def)); buildLayout(); rebuildToolbar(); showTooltip('已恢复默认顺序'); };
       // 紧凑模式
-      sec.querySelector('#loCompact').onchange=e=>{ state.compact=e.target.checked; window.ede.compactUI=state.compact; localStorage.setItem('danmakuCompactUI', state.compact); const bar=document.getElementById('danmakuCtr'); if(bar){ bar.remove(); setTimeout(()=>initUI(),0); } };
+      sec.querySelector('#loCompact').onchange=e=>{ state.compact=e.target.checked; window.ede.compactUI=state.compact; localStorage.setItem('danmakuCompactUI', state.compact); rebuildToolbar(); };
     }
 
-    function buildAdvanced(){ secBuilt.advanced=true; const sec=qs('#sec-advanced'); sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><h4>中文转换</h4><div style='display:flex;flex-direction:column;gap:6px;font-size:12px;'>${[0,1,2].map(v=>`<label style='display:flex;align-items:center;gap:6px;'><input type='radio' name='advCh' value='${v}' ${state.chConvert==v?'checked':''}>${['不转换','转简体','转繁体'][v]}</label>`).join('')}</div></div><div class='dc-card'><h4>缓存与代理</h4><label style='display:flex;align-items:center;gap:6px;font-size:12px;'><input type='checkbox' id='advCache' ${window.ede.cacheEnabled?'checked':''}>启用缓存</label><div class='note'>缓存搜索与弹幕 1h/24h 有效。</div><div style='margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:12px;'><div style='display:flex;gap:6px;align-items:center;background:rgba(255,255,255,.07);padding:4px 8px;border-radius:8px;'><span class='prefix' style='opacity:.6;font-size:12px;'>URL</span><input id='advProxy' placeholder='自定义代理 https://...' value='${window.ede.customProxyServer||''}' style='flex:1;background:transparent;border:0;color:#fff;outline:none;font:inherit;'><button id='advProxyClear' class='icon-btn' title='清除'><span class='md-icon'>close</span></button></div></div></div></div>`; sec.querySelectorAll('input[name=advCh]').forEach(r=> r.onchange=e=>{ if(e.target.checked){ localStorage.setItem('chConvert', e.target.value); window.ede.chConvert=parseInt(e.target.value); reloadDanmaku('reload'); }}); sec.querySelector('#advCache').onchange=e=>{ window.ede.cacheEnabled=e.target.checked; localStorage.setItem('danmakuCacheEnabled', e.target.checked); }; const pr=sec.querySelector('#advProxy'); let t; pr.oninput=()=>{ clearTimeout(t); t=setTimeout(()=>{ const v=pr.value.trim(); window.ede.customProxyServer=v; if(v) localStorage.setItem('danmakuCustomProxy', v); else localStorage.removeItem('danmakuCustomProxy'); },800); }; sec.querySelector('#advProxyClear').onclick=()=>{ pr.value=''; pr.dispatchEvent(new Event('input')); showTooltip('已清除自定义代理'); } }
-
-  // (已前置定义的 showQuickAppearanceDialog 这里移除重复)
+    function buildAdvanced(){ secBuilt.advanced=true; const sec=qs('#sec-advanced'); 
+      // 统计缓存信息
+      const cacheKeys=Object.keys(localStorage);
+      const searchCacheCount=cacheKeys.filter(k=>k.startsWith('_search_cache_')).length;
+      const danmakuCacheCount=cacheKeys.filter(k=>k.startsWith('_danmaku_cache_')).length;
+      let cacheSize=0; for(const k of cacheKeys){ if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')) cacheSize+=localStorage.getItem(k).length; }
+      const cacheSizeMB=(cacheSize/1024/1024).toFixed(2);
+      sec.innerHTML=`<div class='dc-grid'><div class='dc-card'><h4>中文转换</h4><div style='display:flex;flex-direction:column;gap:6px;font-size:12px;'>${[0,1,2].map(v=>`<label style='display:flex;align-items:center;gap:6px;'><input type='radio' name='advCh' value='${v}' ${state.chConvert==v?'checked':''}>${['不转换','转简体','转繁体'][v]}</label>`).join('')}</div></div><div class='dc-card'><h4>缓存与代理</h4><label style='display:flex;align-items:center;gap:6px;font-size:12px;'><input type='checkbox' id='advCache' ${window.ede.cacheEnabled?'checked':''}>启用缓存</label><div class='note'>缓存搜索与弹幕 1h/24h 有效。</div><div style='margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:12px;'><div style='display:flex;gap:6px;align-items:center;background:rgba(255,255,255,.07);padding:4px 8px;border-radius:8px;'><span class='prefix' style='opacity:.6;font-size:12px;'>URL</span><input id='advProxy' placeholder='自定义代理 https://...' value='${window.ede.customProxyServer||''}' style='flex:1;background:transparent;border:0;color:#fff;outline:none;font:inherit;'><button id='advProxyClear' class='icon-btn' title='清除'><span class='md-icon'>close</span></button></div><div style='display:flex;align-items:center;justify-content:space-between;margin-top:6px;'><span id='advCacheInfo' style='opacity:.65;'>搜索:${searchCacheCount} 弹幕:${danmakuCacheCount} (${cacheSizeMB}MB)</span><button id='advCacheClear' class='mini-btn' style='padding:4px 10px;'>清除缓存</button></div></div></div></div>`; sec.querySelectorAll('input[name=advCh]').forEach(r=> r.onchange=e=>{ if(e.target.checked){ localStorage.setItem('chConvert', e.target.value); window.ede.chConvert=parseInt(e.target.value); reloadDanmaku('reload'); }}); sec.querySelector('#advCache').onchange=e=>{ window.ede.cacheEnabled=e.target.checked; localStorage.setItem('danmakuCacheEnabled', e.target.checked); }; const pr=sec.querySelector('#advProxy'); let t; pr.oninput=()=>{ clearTimeout(t); t=setTimeout(()=>{ const v=pr.value.trim(); window.ede.customProxyServer=v; if(v) localStorage.setItem('danmakuCustomProxy', v); else localStorage.removeItem('danmakuCustomProxy'); },800); }; sec.querySelector('#advProxyClear').onclick=()=>{ pr.value=''; pr.dispatchEvent(new Event('input')); showTooltip('已清除自定义代理'); };
+      // 清除缓存按钮
+      sec.querySelector('#advCacheClear').onclick=()=>{
+        const keys=Object.keys(localStorage); let count=0;
+        for(const k of keys){ if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')||k.startsWith('_search_lock_')||k.startsWith('_episode_id_rel_')){ localStorage.removeItem(k); count++; } }
+        showTooltip(`已清除 ${count} 条缓存`);
+        // 刷新显示
+        const info=sec.querySelector('#advCacheInfo'); if(info) info.textContent='搜索:0 弹幕:0 (0.00MB)';
+        console.log(`[EDE] 缓存已清除: ${count} 条记录`);
+      }; }
 
     // 事件 & 初始显示
     dialog.querySelector('#dcReload').onclick=()=>reloadDanmaku('reload',true);
@@ -989,26 +1877,25 @@
   switchSection(initialSection || 'overview');
   }
 
-  // (legacy filterSettings dialog 已彻底移除)
-
-  function updateButtonOrderList(container){ container.innerHTML=''; const buttonConfigs={ displayDanmaku:'弹幕开关', filteringDanmaku:'过滤等级', danmakuSettings:'弹幕设置', switchDanmakuInfo:'信息显示', searchDanmaku:'搜索弹幕', showDanmakuLog:'调试日志', danmakuHeatmap:'热度图', danmakuCenter:'弹幕中心' }; const resetButton=document.createElement('button'); resetButton.className='reset-order-button paper-icon-button-light'; resetButton.innerHTML=`<span class="md-icon">${reset_icon}</span> <span>还原默认顺序</span>`; resetButton.onclick= async ()=>{ const def=['displayDanmaku','filteringDanmaku','danmakuSettings','switchDanmakuInfo','searchDanmaku','showDanmakuLog']; window.ede.buttonOrder=def; localStorage.setItem('danmakuButtonOrder', JSON.stringify(def)); updateButtonOrderList(container); await new Promise(r=>setTimeout(r,0)); const ctr=document.getElementById('danmakuCtr'); if(ctr){ ctr.remove(); await new Promise(r=>setTimeout(r,0)); initUI(); } showTooltip('已还原默认按钮顺序'); }; container.appendChild(resetButton); const list=document.createElement('div'); list.className='button-order-list'; container.appendChild(list); window.ede.buttonOrder.forEach((id,index)=>{ if(!buttonConfigs[id]) return; const item=document.createElement('div'); item.className='button-order-item'; item.setAttribute('draggable','true'); item.setAttribute('data-button-id', id); item.setAttribute('data-index', index); item.innerHTML=`<div class="button-order-content"><span class="md-icon handle">drag_indicator</span><span class="button-name">${buttonConfigs[id]}</span><span class="order-number">#${index+1}</span></div>`; item.addEventListener('dragstart',e=>{ e.dataTransfer.setData('text/plain', index); item.classList.add('dragging'); }); item.addEventListener('dragover',e=>{ e.preventDefault(); const dragging=document.querySelector('.dragging'); if(dragging!==item) item.classList.add('drag-over'); }); item.addEventListener('dragleave',()=> item.classList.remove('drag-over')); item.addEventListener('drop',e=>{ e.preventDefault(); item.classList.remove('drag-over'); const from=parseInt(e.dataTransfer.getData('text/plain')); const to=index; if(from===to) return; const newOrder=[...window.ede.buttonOrder]; const [moved]=newOrder.splice(from,1); newOrder.splice(to,0,moved); window.ede.buttonOrder=newOrder; localStorage.setItem('danmakuButtonOrder', JSON.stringify(newOrder)); updateButtonOrderList(container); const ctr=document.getElementById('danmakuCtr'); if(ctr){ ctr.remove(); initUI(); } showTooltip('按钮顺序已更新'); }); item.addEventListener('dragend',()=>{ item.classList.remove('dragging'); document.querySelectorAll('.button-order-item').forEach(n=>n.classList.remove('drag-over')); }); list.appendChild(item); }); if(!document.querySelector('#button-order-styles')){ const style=document.createElement('style'); style.id='button-order-styles'; style.textContent=`.button-order-list{display:flex;flex-direction:column;gap:8px}.button-order-item{background:rgba(255,255,255,0.1);border-radius:6px;transition:.2s}.button-order-content{display:flex;align-items:center;padding:12px;gap:12px;cursor:move}.button-order-item .handle{opacity:.7}.button-order-item .button-name{flex:1}.button-order-item .order-number{opacity:.5}.button-order-item.dragging{opacity:.5;background:rgba(0,164,220,0.2)}.button-order-item.drag-over{transform:translateY(2px);box-shadow:0 -2px 0 #00a4dc}.button-order-item:hover{background:rgba(255,255,255,0.15)}.reset-order-button{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-bottom:12px;padding:8px;background:rgba(0,164,220,0.1);color:#00a4dc;border:none;border-radius:6px;cursor:pointer}.reset-order-button:hover{background:rgba(0,164,220,0.2);transform:translateY(-1px)}.reset-order-button .md-icon{font-size:18px}`; document.head.appendChild(style); } }
-
   // ===== 实时弹幕密度图（嵌入进度条上方） =====
-  function buildDanmakuDensityData(){ try { const list=window.ede.filteredComments||window.ede.parsedComments; if(!list||!list.length){ window.ede._densityData=null; return; } const lastTime=list[list.length-1].time||0; const duration = Math.max(lastTime, getActiveVideo()?.duration||0); const bucketSize = 1; const bucketCount=Math.ceil(duration/bucketSize)+1; const buckets=new Array(bucketCount).fill(0); for(const c of list){ const idx=(c.time/bucketSize)|0; if(idx>=0 && idx<bucketCount) buckets[idx]++; } const max=buckets.reduce((a,b)=>b>a?b:a,0)||1; window.ede._densityData={ buckets,max,bucketSize,duration }; } catch(e){ console.warn('密度数据失败',e); window.ede._densityData=null; } }
+  function buildDanmakuDensityData(){ try { const list=window.ede.filteredComments||window.ede.parsedComments; if(!list||!list.length){ window.ede._densityData=null; return; } const lastTime=list[list.length-1].time||0; const duration = Math.max(lastTime, getActiveVideo()?.duration||0); // 动态bucket：短视频1秒/桶，长视频按比例增大（最高5秒/桶），避免溢出
+    const bucketSize = duration > 3600 ? 5 : (duration > 1800 ? 3 : (duration > 600 ? 2 : 1)); const bucketCount=Math.ceil(duration/bucketSize)+1; const buckets=new Array(bucketCount).fill(0); for(const c of list){ const idx=Math.floor(c.time/bucketSize); if(idx>=0 && idx<bucketCount) buckets[idx]++; } const max=buckets.reduce((a,b)=>b>a?b:a,0)||1; window.ede._densityData={ buckets,max,bucketSize,duration }; } catch(e){ console.warn('密度数据失败',e); window.ede._densityData=null; } }
   function getProgressSlider(){ return document.querySelector(`${mediaContainerQueryStr} .videoOsdPositionSliderContainer`)||document.querySelector('.videoOsdPositionSliderContainer'); }
   function ensureDensityOverlay(){ const host=getProgressSlider(); if(!host) return null; if(!host.classList.contains('ede-density-host')){ host.classList.add('ede-density-host'); host.style.position='relative'; }
     let wrap=host.querySelector('.ede-density-wrap'); if(!wrap){ wrap=document.createElement('div'); wrap.className='ede-density-wrap'; // 再提高高度 (原 38px -> 46px -> 52px)
       wrap.style.cssText='position:absolute;left:0;right:0;bottom:100%;height:52px;padding:0 0 8px;pointer-events:none;'; host.appendChild(wrap); }
-  if(!document.getElementById('ede-density-style')){ const st=document.createElement('style'); st.id='ede-density-style'; st.textContent=`:root{--ede-pbp-unplayed-op:0.22;--ede-pbp-blue-op:0.55;--ede-pbp-color:#00a1d6;} .ede-density-wrap svg{width:100%;height:100%;display:block;} .ede-density-wrap .ede-pbp-base{fill:#ffffff;opacity:var(--ede-pbp-unplayed-op,0.22);} .ede-density-wrap .ede-pbp-blue,.ede-density-wrap .ede-pbp-blue-seg{fill:var(--ede-pbp-color,#00a1d6);opacity:var(--ede-pbp-blue-op,0.55);} .ede-density-wrap .ede-pbp-line{stroke:rgba(255,255,255,0.55);stroke-width:1;shape-rendering:crispEdges;} .ede-density-wrap .tip{position:absolute;bottom:100%;background:rgba(0,0,0,.78);color:#fff;font-size:11px;padding:4px 6px;border-radius:4px;white-space:nowrap;transform:translate(-50%, -6px);pointer-events:none;backdrop-filter:blur(4px);} .ede-reset-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;border:1px solid #425166;background:rgba(255,255,255,0.03);color:#cfd7df;font-weight:500;cursor:pointer;backdrop-filter:blur(4px);transition:color .25s,background .25s,border-color .25s,transform .25s;} .ede-reset-btn:hover{background:rgba(255,255,255,0.06);border-color:#56697d;color:#fff;} .ede-reset-btn:active{transform:scale(.92);} .ede-reset-btn .md-icon{transform:rotate(0deg);transition:transform .5s cubic-bezier(.4,.1,.2,1);opacity:.85;} .ede-reset-btn:hover .md-icon{transform:rotate(-180deg);opacity:1;} `; document.head.appendChild(st); }
+  if(!document.getElementById('ede-density-style')){ const st=document.createElement('style'); st.id='ede-density-style'; const heatOpacity=localStorage.getItem('edeHeatmapOpacity')||'80'; st.textContent=`:root{--ede-pbp-unplayed-op:0.22;--ede-pbp-blue-op:0.55;--ede-pbp-color:#00a1d6;--ede-heatmap-opacity:${heatOpacity/100};} .ede-density-wrap{opacity:var(--ede-heatmap-opacity,0.8);} .ede-density-wrap svg{width:100%;height:100%;display:block;} .ede-density-wrap .ede-pbp-base{fill:#ffffff;opacity:var(--ede-pbp-unplayed-op,0.22);} .ede-density-wrap .ede-pbp-blue,.ede-density-wrap .ede-pbp-blue-seg{fill:var(--ede-pbp-color,#00a1d6);opacity:var(--ede-pbp-blue-op,0.55);} .ede-density-wrap .ede-pbp-line{stroke:rgba(255,255,255,0.55);stroke-width:1;shape-rendering:crispEdges;} .ede-density-wrap .tip{position:absolute;bottom:100%;background:rgba(0,0,0,.78);color:#fff;font-size:11px;padding:4px 6px;border-radius:4px;white-space:nowrap;transform:translate(-50%, -6px);pointer-events:none;backdrop-filter:blur(4px);} .ede-reset-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;border:1px solid #425166;background:rgba(255,255,255,0.03);color:#cfd7df;font-weight:500;cursor:pointer;backdrop-filter:blur(4px);transition:color .25s,background .25s,border-color .25s,transform .25s;} .ede-reset-btn:hover{background:rgba(255,255,255,0.06);border-color:#56697d;color:#fff;} .ede-reset-btn:active{transform:scale(.92);} .ede-reset-btn .md-icon{transform:rotate(0deg);transition:transform .5s cubic-bezier(.4,.1,.2,1);opacity:.85;} .ede-reset-btn:hover .md-icon{transform:rotate(-180deg);opacity:1;} `; document.head.appendChild(st); }
     return wrap;
   }
-  function simplifyBuckets(buckets,maxPoints){ if(buckets.length<=maxPoints) return buckets.map((v,i)=>[i,v]); const step=buckets.length/maxPoints; const out=[]; for(let i=0;i<maxPoints;i++){ const start=Math.floor(i*step); const end=Math.floor((i+1)*step); let sum=0,c=0; for(let j=start;j<end;j++){ sum+=buckets[j]; c++; } out.push([Math.floor((start+end)/2), c?sum/c:0]); } return out; }
-  function buildCurvePath(samples,height,maxVal){ if(samples.length===0) return ''; const pts=samples.map(([x,v])=>[x, height - (v/maxVal)* (height-4) -2 ]); // y
+  function simplifyBuckets(buckets,maxPoints){ // 动态计算采样点：长视频需更多点以保持精度
+    const actualMaxPoints = Math.min(Math.max(maxPoints, Math.ceil(buckets.length/2)), 360); if(buckets.length<=actualMaxPoints) return buckets.map((v,i)=>[i,v]); const step=buckets.length/actualMaxPoints; const out=[]; for(let i=0;i<actualMaxPoints;i++){ const start=Math.floor(i*step); const end=Math.floor((i+1)*step); let sum=0,c=0; for(let j=start;j<end;j++){ if(j<buckets.length){ sum+=buckets[j]; c++; } } out.push([Math.floor((start+end)/2), c?sum/c:0]); } return out; }
+  function buildCurvePath(samples,height,maxVal){ if(samples.length===0) return ''; // 对数缩放处理极端高密度弹幕，避免曲线压缩到顶部
+    const useLogScale = maxVal > 50; const scaleVal = (v) => useLogScale ? Math.log1p(v) : v; const scaledMax = useLogScale ? Math.log1p(maxVal) : maxVal; const minY = 4; const maxHeight = height - minY - 2; const pts=samples.map(([x,v])=>[x, height - (scaleVal(v)/scaledMax)* maxHeight - minY ]); // y
     // Catmull-Rom to Bezier
     let d=`M0 ${height} L ${pts[0][0]} ${pts[0][1]}`; for(let i=0;i<pts.length-1;i++){ const p0=pts[i-1]||pts[i]; const p1=pts[i]; const p2=pts[i+1]; const p3=pts[i+2]||p2; const cp1x=p1[0]+(p2[0]-p0[0])/6; const cp1y=p1[1]+(p2[1]-p0[1])/6; const cp2x=p2[0]-(p3[0]-p1[0])/6; const cp2y=p2[1]-(p3[1]-p1[1])/6; d+=` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`; }
     const lastX=samples[samples.length-1][0]; d+=` L ${lastX} ${height} Z`; return d; }
   function renderDanmakuTimeline(resizeOnly){ const data=window.ede._densityData; const wrap=ensureDensityOverlay(); if(!wrap) return; if(!data){ wrap.innerHTML=''; return; } const { buckets,max,duration }=data; const height=120; // viewBox height (再提高)
-  if(localStorage.getItem('danmakuTimelineEnabled')==='false'){ wrap.style.display='none'; return; } else { wrap.style.display='block'; }
+  if(StorageManager.get('danmakuTimelineEnabled', 'true')==='false'){ wrap.style.display='none'; return; } else { wrap.style.display='block'; }
     const simplified=simplifyBuckets(buckets,180); const denom=Math.max(1,(buckets.length-1)); const scaleX= (x)=> (x/denom)*1000; const scaled = simplified.map(([i,v])=>[scaleX(i), v]); const path=buildCurvePath(scaled,height,max); const video=getActiveVideo(); const progressRatio= video && duration? (video.currentTime/duration):0; const progressX = progressRatio*1000;
     wrap.innerHTML=`<svg viewBox='0 0 1000 ${height}' preserveAspectRatio='none'>
       <defs>
@@ -1028,13 +1915,15 @@
     if(resizeOnly) return;
     setupCurveHover(wrap, duration, buckets, height, path);
   }
-  // 绘制已观看段（支持跳跃空白）
-  function drawWatchedSegments(force){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const group=wrap.querySelector('.ede-pbp-blue-group'); if(!group) return; const data=window.ede._densityData; const video=getActiveVideo(); if(!data||!video) return; const {duration}=data; const W=1000; const svg=wrap.querySelector('svg'); if(!svg) return; const vh=svg.viewBox.baseVal.height;
-    if(force){ group.innerHTML=''; for(const seg of (window.ede._watchedSegments||[])){ const s=Math.max(0, Math.min(seg.start, duration)); const e=Math.max(s, Math.min(seg.end, duration)); if(e<=s) continue; const x=(s/duration)*W; const w=((e-s)/duration)*W; const rect=document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('class','ede-pbp-blue-seg'); rect.setAttribute('x', x); rect.setAttribute('y', 0); rect.setAttribute('width', w); rect.setAttribute('height', vh); group.appendChild(rect); seg._el=rect; } return; }
-    // 增量：只处理最后一段
+  // 绘制已观看段（支持跳跃空白）- 优化：缓存计算结果
+  function drawWatchedSegments(force){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const group=wrap.querySelector('.ede-pbp-blue-group'); if(!group) return; const data=window.ede._densityData; const video=getActiveVideo(); if(!data||!video) return; const {duration}=data; if(!duration) return; const W=1000; const svg=wrap.querySelector('svg'); if(!svg) return; const vh=svg.viewBox.baseVal.height;
+    const invDur=1/duration; // 缓存除法
+    if(force){ group.innerHTML=''; for(const seg of (window.ede._watchedSegments||[])){ const s=Math.max(0, Math.min(seg.start, duration)); const e=Math.max(s, Math.min(seg.end, duration)); if(e<=s) continue; const x=s*invDur*W; const w=(e-s)*invDur*W; const rect=document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('class','ede-pbp-blue-seg'); rect.setAttribute('x', x); rect.setAttribute('y', 0); rect.setAttribute('width', w); rect.setAttribute('height', vh); group.appendChild(rect); seg._el=rect; seg._lastEnd=e; } return; }
+    // 增量：只处理最后一段，避免重复setAttribute
     const segs=window.ede._watchedSegments||[]; if(!segs.length) return; const last=segs[segs.length-1]; if(!last._el){ // 创建
-      const s=Math.max(0, Math.min(last.start, duration)); const e=Math.max(s, Math.min(last.end, duration)); if(e<=s) return; const rect=document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('class','ede-pbp-blue-seg'); rect.setAttribute('y',0); rect.setAttribute('height',vh); group.appendChild(rect); last._el=rect; }
-    const s=Math.max(0, Math.min(last.start, duration)); const e=Math.max(s, Math.min(last.end, duration)); if(e<=s) return; const x=(s/duration)*W; const w=((e-s)/duration)*W; last._el.setAttribute('x', x); last._el.setAttribute('width', w);
+      const s=Math.max(0, Math.min(last.start, duration)); const e=Math.max(s, Math.min(last.end, duration)); if(e<=s) return; const rect=document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('class','ede-pbp-blue-seg'); rect.setAttribute('y',0); rect.setAttribute('height',vh); group.appendChild(rect); last._el=rect; last._lastEnd=0; }
+    const s=Math.max(0, Math.min(last.start, duration)); const e=Math.max(s, Math.min(last.end, duration)); if(e<=s) return; // 仅当宽度变化超过阈值时更新
+    if(Math.abs(e - (last._lastEnd||0)) < 0.1) return; const x=s*invDur*W; const w=(e-s)*invDur*W; last._el.setAttribute('x', x); last._el.setAttribute('width', w); last._lastEnd=e;
   }
   // 维护观看进度段（精简+动态阈值）
   function updateWatchedSegments(force){ const video=getActiveVideo(); const data=window.ede._densityData; if(!video||!data||!video.duration) return; const t=video.currentTime; const segs=window.ede._watchedSegments||[]; const pr=video.playbackRate||1; const dynamicGap=Math.min(3, Math.max(0.8, 0.5*pr + 0.4));
@@ -1045,16 +1934,17 @@
     if(t>last.end){ last.end=t; if(force || t - (window.ede._lastSegmentUpdateTime||0) > 0.25){ drawWatchedSegments(false); window.ede._lastSegmentUpdateTime=t; } }
   }
   function setupCurveHover(wrap,duration,buckets,height,path){ if(wrap._curveHoverBound) return; wrap._curveHoverBound=true; let tip=document.createElement('div'); tip.className='tip'; tip.style.display='none'; wrap.appendChild(tip); const svg=wrap.querySelector('svg'); const video=getActiveVideo(); svg.addEventListener('mousemove',e=>{ const rect=svg.getBoundingClientRect(); const x=Math.min(Math.max(e.clientX-rect.left,0),rect.width); const ratio=x/rect.width; const t=ratio*duration; const idx=Math.min(buckets.length-1, Math.max(0, Math.floor(ratio*buckets.length))); const count=buckets[idx]; tip.style.display='block'; tip.style.left=x+'px'; tip.innerHTML=`${formatTime(t)}<br>${count}条`; }); svg.addEventListener('mouseleave',()=>{ tip.style.display='none'; }); svg.addEventListener('click',e=>{ const rect=svg.getBoundingClientRect(); const x=Math.min(Math.max(e.clientX-rect.left,0),rect.width); const ratio=x/rect.width; if(video){ video.currentTime=ratio*duration; updateTimelineCursor(); } }); }
-  function updateTimelineCursor(){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const data=window.ede._densityData; if(!data) return; const video=getActiveVideo(); if(!video||!video.duration) return; const svg=wrap.querySelector('svg'); if(!svg) return; const duration=data.duration; const progressRatio=video.currentTime/duration; const progressX=progressRatio*1000; const line=svg.querySelector('.ede-pbp-line'); if(line){ line.setAttribute('x1',progressX); line.setAttribute('x2',progressX); } const blue=svg.querySelector('.ede-pbp-blue'); if(blue){ blue.setAttribute('width',progressX); }
-    updateWatchedSegments();
+  function updateTimelineCursor(force){ const wrap=document.querySelector('.ede-density-wrap'); if(!wrap) return; const data=window.ede._densityData; if(!data) return; const video=getActiveVideo(); if(!video||!video.duration) return; const svg=wrap.querySelector('svg'); if(!svg) return; const duration=data.duration; const progressRatio=Math.min(1, video.currentTime/duration); const progressX=progressRatio*1000; const line=svg.querySelector('.ede-pbp-line'); if(line){ line.setAttribute('x1',progressX); line.setAttribute('x2',progressX); } const blue=svg.querySelector('.ede-pbp-blue'); if(blue){ blue.setAttribute('width',progressX); }
+    updateWatchedSegments(force);
   }
   function attachTimelineMediaEvents(){ const video=getActiveVideo(); if(!video||video._densityBound) return; video._densityBound=true; // 节流 timeupdate
-    const baseInterval=0.08; let last=0; let scheduled=false; function flush(){ scheduled=false; updateTimelineCursor(); }
-    video.addEventListener('timeupdate', ()=>{ const t=video.currentTime; const pr=Math.max(1, video.playbackRate||1); const interval=baseInterval/Math.min(pr,2); if(t-last>=interval){ last=t; updateTimelineCursor(); } else if(!scheduled){ scheduled=true; setTimeout(flush, (interval-(t-last))*1000); } });
-    video.addEventListener('seeked', ()=>{ updateWatchedSegments(true); last=0; updateTimelineCursor(); }); }
+    const baseInterval=0.08; let last=0; let rafId=null; function updateFrame(){ rafId=null; updateTimelineCursor(); }
+    video.addEventListener('timeupdate', ()=>{ const t=video.currentTime; const pr=Math.max(1, video.playbackRate||1); const interval=baseInterval/Math.min(pr,2); if(t-last>=interval){ last=t; if(!rafId) rafId=requestAnimationFrame(updateFrame); } });
+    video.addEventListener('seeked', ()=>{ updateWatchedSegments(true); last=0; updateTimelineCursor(true); });
+    video.addEventListener('seeking', ()=>{ updateTimelineCursor(true); });
+    video.addEventListener('ratechange', ()=>{ updateTimelineCursor(true); }); }
   // 追加暂停平滑处理：动态系数缓冲高倍速恢复跳跃 (使用统一 nowSec)
   (function enhancePauseSmooth(){ const video=getActiveVideo(); if(!video) return; if(video._edePauseSmoothBound) return; video._edePauseSmoothBound=true; video.addEventListener('pause', ()=>{ window.ede._pauseWallClock = nowSec(); }); video.addEventListener('play', ()=>{ if(!window.ede.danmaku) return; if(!window.ede._pauseWallClock) return; const delta = nowSec() - window.ede._pauseWallClock; const pr=Math.max(1, video.playbackRate||1); const factor = Math.min(0.9, 0.32 + (pr-1)*0.28); const smoothDelay = Math.min(0.8, delta * factor); try { const rl = window.ede.danmaku._ && window.ede.danmaku._.runningList; if(Array.isArray(rl)) rl.forEach(c=>{ if(c && typeof c._utc==='number') c._utc += smoothDelay; }); } catch(e){} window.ede._pauseWallClock = 0; }); })();
-  function formatTime(sec){ sec=Math.max(sec,0); const h=Math.floor(sec/3600); const m=Math.floor((sec%3600)/60); const s=Math.floor(sec%60); return (h>0? h.toString().padStart(2,'0')+':':'')+m.toString().padStart(2,'0')+':'+s.toString().padStart(2,'0'); }
 
   // ====== 独立弹幕热度图对话框 (柱状+平滑折线) ======
   function showHeatmapDialog(){
