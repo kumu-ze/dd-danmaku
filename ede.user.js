@@ -394,27 +394,28 @@
     }
   }
 
+  // 辅助函数：判断是否为正片（过滤 Opening/Ending/PV/SP 等特殊集）
+  // 支持传入字符串或 episode 对象
+  function isMainEpisode(epOrTitle) {
+    const title = typeof epOrTitle === 'string' ? epOrTitle : (epOrTitle?.episodeTitle || '');
+    // 排除常见特殊集标识
+    if(/^(OP|ED|PV|CM|SP|Opening|Ending|Preview|Trailer|NC|NCOP|NCED)/i.test(title)) return false;
+    if(/^C\d+\s*(Opening|Ending|OP|ED)/i.test(title)) return false; // C1 Opening, C2 Ending
+    if(/(放送直前|AnimeJapan|特番|番宣|宣传|先行|予告)/i.test(title)) return false;
+    if(/^\d+分/.test(title)) return false; // 4分S2放送直前 等
+    return true;
+  }
+
+  // 计算一季的正片集数（排除特殊集）
+  function countMainEpisodes(anime) {
+    return (anime.episodes || []).filter(ep => isMainEpisode(ep)).length;
+  }
+
   function processSearchResult(animaInfo, _id, _episode_key, episode){
     if(!animaInfo || !animaInfo.animes || animaInfo.animes.length===0) return null;
 
     const seasonNumber = window.ede._seasonNumber || 1;
     const metadata = window.ede._episodeMetadata || {};
-
-    // 辅助函数：判断是否为正片（过滤 Opening/Ending/PV/SP 等特殊集）
-    function isMainEpisode(ep) {
-      const title = ep.episodeTitle || '';
-      // 排除常见特殊集标识
-      if(/^(OP|ED|PV|CM|SP|Opening|Ending|Preview|Trailer|NC|NCOP|NCED)/i.test(title)) return false;
-      if(/^C\d+\s*(Opening|Ending|OP|ED)/i.test(title)) return false; // C1 Opening, C2 Ending
-      if(/(放送直前|AnimeJapan|特番|番宣|宣传|先行|予告)/i.test(title)) return false;
-      if(/^\d+分/.test(title)) return false; // 4分S2放送直前 等
-      return true;
-    }
-
-    // 计算一季的正片集数（排除特殊集）
-    function countMainEpisodes(anime) {
-      return (anime.episodes || []).filter(isMainEpisode).length;
-    }
 
     let selectedAnime;
     let selectedEpisode;
@@ -947,7 +948,7 @@
           if(tvSeasons.length > 1) {
             // 多季情况：计算应该在哪一季
             for(let i = 0; i < tvSeasons.length; i++) {
-              const seasonEps = tvSeasons[i].anime.episodes.filter(ep => isMainEpisode(ep.episodeTitle)).length;
+              const seasonEps = tvSeasons[i].anime.episodes.filter(ep => isMainEpisode(ep)).length;
               if(embyEpIndex <= cumulativeEps + seasonEps) {
                 targetSeasonIdx = tvSeasons[i].idx;
                 targetEpIdx = embyEpIndex - cumulativeEps - 1;
@@ -963,7 +964,7 @@
             updateEpisodeSelect(currentAnimeInfo.animes[targetSeasonIdx]);
             updateAnimeImg(currentAnimeInfo.animes[targetSeasonIdx].animeId);
             // 在正片中找到对应集数
-            const mainEps = currentAnimeInfo.animes[targetSeasonIdx].episodes.filter(ep => isMainEpisode(ep.episodeTitle));
+            const mainEps = currentAnimeInfo.animes[targetSeasonIdx].episodes.filter(ep => isMainEpisode(ep));
             if(targetEpIdx >= 0 && targetEpIdx < mainEps.length) {
               const targetEp = mainEps[targetEpIdx];
               const realIdx = currentAnimeInfo.animes[targetSeasonIdx].episodes.indexOf(targetEp);
@@ -1892,8 +1893,11 @@ ${h('API响应')}: ${window.ede?.lastApiResponse || '无'}`;
   function buildCurvePath(samples,height,maxVal){ if(samples.length===0) return ''; // 对数缩放处理极端高密度弹幕，避免曲线压缩到顶部
     const useLogScale = maxVal > 50; const scaleVal = (v) => useLogScale ? Math.log1p(v) : v; const scaledMax = useLogScale ? Math.log1p(maxVal) : maxVal; const minY = 4; const maxHeight = height - minY - 2; const pts=samples.map(([x,v])=>[x, height - (scaleVal(v)/scaledMax)* maxHeight - minY ]); // y
     // Catmull-Rom to Bezier
-    let d=`M0 ${height} L ${pts[0][0]} ${pts[0][1]}`; for(let i=0;i<pts.length-1;i++){ const p0=pts[i-1]||pts[i]; const p1=pts[i]; const p2=pts[i+1]; const p3=pts[i+2]||p2; const cp1x=p1[0]+(p2[0]-p0[0])/6; const cp1y=p1[1]+(p2[1]-p0[1])/6; const cp2x=p2[0]-(p3[0]-p1[0])/6; const cp2y=p2[1]-(p3[1]-p1[1])/6; d+=` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`; }
-    const lastX=samples[samples.length-1][0]; d+=` L ${lastX} ${height} Z`; return d; }
+    let d=`M0 ${height} L0 ${pts[0][1]} L ${pts[0][0]} ${pts[0][1]}`; for(let i=0;i<pts.length-1;i++){ const p0=pts[i-1]||pts[i]; const p1=pts[i]; const p2=pts[i+1]; const p3=pts[i+2]||p2; const cp1x=p1[0]+(p2[0]-p0[0])/6; const cp1y=p1[1]+(p2[1]-p0[1])/6; const cp2x=p2[0]-(p3[0]-p1[0])/6; const cp2y=p2[1]-(p3[1]-p1[1])/6; d+=` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`; }
+    // 确保曲线填满到右边缘 (1000)
+    const lastX=samples[samples.length-1][0]; const lastY=pts[pts.length-1][1];
+    if(lastX < 1000) d+=` L 1000 ${lastY}`;
+    d+=` L 1000 ${height} Z`; return d; }
   function renderDanmakuTimeline(resizeOnly){ const data=window.ede._densityData; const wrap=ensureDensityOverlay(); if(!wrap) return; if(!data){ wrap.innerHTML=''; return; } const { buckets,max,duration }=data; const height=120; // viewBox height (再提高)
   if(StorageManager.get('danmakuTimelineEnabled', 'true')==='false'){ wrap.style.display='none'; return; } else { wrap.style.display='block'; }
     const simplified=simplifyBuckets(buckets,180); const denom=Math.max(1,(buckets.length-1)); const scaleX= (x)=> (x/denom)*1000; const scaled = simplified.map(([i,v])=>[scaleX(i), v]); const path=buildCurvePath(scaled,height,max); const video=getActiveVideo(); const progressRatio= video && duration? (video.currentTime/duration):0; const progressX = progressRatio*1000;
