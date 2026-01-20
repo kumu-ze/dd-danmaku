@@ -3,7 +3,7 @@
 // @namespace    https://github.com/kumu-ze/dd-danmaku
 // @description  Emby 弹幕插件：弹幕获取/过滤/外观/热度图/快捷设置
 // @author       kumuze, RyoLee
-// @version      2.2.5
+// @version      2.3.0
 // @license      MIT
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
@@ -22,7 +22,6 @@
   const translate_icon = '\uE927';
   // 过滤强度图标（使用字体连字，适配不同 Material 字体族更稳妥）
   const filter_icons = ['filter_none', 'filter_1', 'filter_2', 'filter_3', 'filter_4'];
-  // removed unused transparency_icons
   const info_switch_icons = ['\uE8F5', '\uE8F4'];
   const more_filter_icon = '\uE5D3';
   const log_icon = '\uE86D';
@@ -35,11 +34,8 @@
   //通用参数常量
   const menubarOptions = { class: 'flex flex-direction-row' };
   const buttonOptions = { class: 'paper-icon-button-light', is: 'paper-icon-button-light' };
+  // 滑块相关选项常量（保留以备扩展）
   const rangeSliderOptions = { class: 'emby-slider emby-slider-scalebg emby-slider-nothumb', is: 'emby-slider' };
-  const sliderContainerOptions = { class: 'slidercontainer flex-grow emby-slider-container' };
-  const sliderWrapperOptions = { class: 'videoOsdVolumeSliderWrapper flex-grow' };
-  const sliderdivOptions = { class: 'videoOsdVolumeControls flex flex-direction-row align-items-center', style: 'position:relative;' };
-  // removed unused sliderLabelOptions
 
   //定位标志常量
   const uiAnchorStr = '\uE034';
@@ -55,7 +51,7 @@
   const fontSizeMobile = 15;
   if (/Mobi|Android|iPhone/i.test(navigator.userAgent)) isMobile = true;
   // 版本号（用于弹幕中心显示）
-  const EDE_VERSION = '2.2.5';
+  const EDE_VERSION = '2.3.0';
 
   // StorageManager (阶段1) - 带内存缓存以减少 localStorage 访问
   const StorageManager = {
@@ -137,8 +133,9 @@
     const timeline=(StorageManager.get('danmakuTimelineEnabled', 'true')!=='false');
     const timelineOp=StorageManager.get('edeTimelineOpacity', '85');
     const heatmapOp=StorageManager.get('edeHeatmapOpacity', '80');
-    dialog.innerHTML=`<div class='qa-shell ede-unified-shell' style="--qa-accent:#00a4dc;display:flex;flex-direction:column;min-width:460px;max-width:520px;background:linear-gradient(135deg,rgba(32,32,36,.94),rgba(18,18,20,.94));backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:18px;overflow:hidden;color:#fff;font-size:14px;box-shadow:0 8px 28px -6px rgba(0,0,0,.45);animation:qa-fade .18s ease;">
-      <style>dialog#ede-quick-appearance input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:4px;background:linear-gradient(to right,var(--qa-accent) 0%,var(--qa-accent) 50%,#444 50%,#444 100%);}dialog#ede-quick-appearance input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid var(--qa-accent);box-shadow:0 2px 4px rgba(0,0,0,.4);}#ede-quick-appearance .qa-row{display:flex;align-items:center;gap:12px;}#ede-quick-appearance .qa-label{width:70px;font-size:12px;opacity:.85;display:flex;align-items:center;gap:4px;}#ede-quick-appearance .qa-value{min-width:50px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:#00d2ff;background:rgba(255,255,255,.08);padding:4px 8px;border-radius:8px;}#ede-quick-appearance .qa-body{padding:18px 20px;display:flex;flex-direction:column;gap:14px;}#ede-quick-appearance .qa-head{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid rgba(255,255,255,.07);}#ede-quick-appearance .qa-actions{display:flex;gap:6px;}#ede-quick-appearance .qa-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#fff;cursor:pointer;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;transition:.2s;}#ede-quick-appearance .qa-btn:hover{background:rgba(255,255,255,.18);}#ede-quick-appearance .qa-btn:active{transform:scale(.9);}#ede-quick-appearance .qa-foot{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-top:1px solid rgba(255,255,255,.07);font-size:11px;opacity:.65;}#ede-quick-appearance .qa-section{background:rgba(255,255,255,.04);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}#ede-quick-appearance .qa-section-title{font-size:11px;opacity:.6;display:flex;align-items:center;gap:6px;margin-bottom:2px;}@keyframes qa-fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}</style>
+    // 注入快速外观样式（单例）
+    if(!document.getElementById('ede-qa-style')){ const qst=document.createElement('style'); qst.id='ede-qa-style'; qst.textContent=`#ede-quick-appearance{--qa-accent:#00a4dc;}#ede-quick-appearance .qa-shell{display:flex;flex-direction:column;min-width:460px;max-width:520px;background:linear-gradient(135deg,rgba(32,32,36,.94),rgba(18,18,20,.94));backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:18px;overflow:hidden;color:#fff;font-size:14px;box-shadow:0 8px 28px -6px rgba(0,0,0,.45);animation:qa-fade .18s ease;}#ede-quick-appearance input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:4px;background:linear-gradient(to right,var(--qa-accent) 0%,var(--qa-accent) 50%,#444 50%,#444 100%);}#ede-quick-appearance input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid var(--qa-accent);box-shadow:0 2px 4px rgba(0,0,0,.4);}#ede-quick-appearance .qa-row{display:flex;align-items:center;gap:12px;}#ede-quick-appearance .qa-label{width:70px;font-size:12px;opacity:.85;display:flex;align-items:center;gap:4px;}#ede-quick-appearance .qa-value{min-width:50px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:#00d2ff;background:rgba(255,255,255,.08);padding:4px 8px;border-radius:8px;}#ede-quick-appearance .qa-body{padding:18px 20px;display:flex;flex-direction:column;gap:14px;}#ede-quick-appearance .qa-head{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid rgba(255,255,255,.07);}#ede-quick-appearance .qa-actions{display:flex;gap:6px;}#ede-quick-appearance .qa-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#fff;cursor:pointer;border-radius:10px;display:flex;align-items:center;justify-content:center;width:40px;height:40px;transition:.2s;}#ede-quick-appearance .qa-btn:hover{background:rgba(255,255,255,.18);}#ede-quick-appearance .qa-btn:active{transform:scale(.9);}#ede-quick-appearance .qa-foot{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-top:1px solid rgba(255,255,255,.07);font-size:11px;opacity:.65;}#ede-quick-appearance .qa-section{background:rgba(255,255,255,.04);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}#ede-quick-appearance .qa-section-title{font-size:11px;opacity:.6;display:flex;align-items:center;gap:6px;margin-bottom:2px;}@keyframes qa-fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}`; document.head.appendChild(qst); }
+    dialog.innerHTML=`<div class='qa-shell'>
       <div class='qa-head'>
         <strong style='font-size:15px;display:flex;align-items:center;gap:8px;'>外观快速设置<span style="padding:2px 6px;font-size:11px;background:#00a4dc22;color:#00c8ff;border-radius:4px;">实时</span></strong>
         <div class='qa-actions'>
@@ -233,7 +230,7 @@
   function ensureToolbarStyles(){
     if(document.getElementById('ede-toolbar-style')) return;
     const st=document.createElement('style'); st.id='ede-toolbar-style';
-    st.textContent=`#danmakuCtr{gap:4px;display:flex;align-items:center;}#danmakuCtr button.paper-icon-button-light{position:relative;border-radius:8px!important;width:38px;height:38px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.08);backdrop-filter:blur(6px);transition:.2s;border:1px solid rgba(255,255,255,.12);}#danmakuCtr button.paper-icon-button-light:hover{background:rgba(255,255,255,.18);}#danmakuCtr button.paper-icon-button-light:active{transform:scale(.9);}#danmakuCtr .md-icon{font-size:20px;}dialog#danmakuCenterDialog input[type=range]{-webkit-appearance:none;height:6px;border-radius:4px;background:linear-gradient(to right,#00a4dc 0%,#00a4dc 50%,#444 50%,#444 100%);outline:none;}dialog#danmakuCenterDialog input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #00a4dc;box-shadow:0 2px 4px rgba(0,0,0,.4);}dialog#danmakuCenterDialog .range-line{display:flex;align-items:center;gap:8px;margin:6px 0;}dialog#danmakuCenterDialog .range-line .lbl{width:48px;opacity:.85;}dialog#danmakuCenterDialog .range-line .num{min-width:34px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:#00c8ff;}dialog#danmakuCenterDialog .toggle-line{display:flex;gap:18px;margin-top:4px;font-size:12px;}dialog#danmakuCenterDialog .note{margin-top:4px;}`;
+    st.textContent=`#danmakuCtr{gap:4px;display:flex;align-items:center;}#danmakuCtr button.paper-icon-button-light{position:relative;border-radius:8px!important;width:38px;height:38px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.08);backdrop-filter:blur(6px);transition:.2s;border:1px solid rgba(255,255,255,.12);}#danmakuCtr button:hover{background:rgba(255,255,255,.18);}#danmakuCtr button:active{transform:scale(.9);}#danmakuCtr .md-icon{font-size:20px;}`;
     document.head.appendChild(st);
   }
 
@@ -268,8 +265,8 @@
   if (document.getElementById('danmakuCtr')) document.getElementById('danmakuCtr').remove();
   ensureToolbarStyles();
     let parent = uiAnchor[TargetIndex].parentNode.parentNode.parentNode; let menubar=document.createElement('div'); menubar.id='danmakuCtr'; menubar.className=menubarOptions.class; if(!window.ede.episode_info) menubar.style.opacity=0.5; parent.append(menubar);
-  const buttonConfigs = { displayDanmaku:{...displayButtonOpts,label:'弹幕开关'}, filteringDanmaku:{...filterButtonOpts,label:'过滤等级'}, danmakuSettings:{...settingsButtonOpts,label:'弹幕设置'}, switchDanmakuInfo:{...infoSwitchButtonOpts,label:'信息显示'}, searchDanmaku:{...searchButtonOpts,label:'搜索弹幕'}, showDanmakuLog:{...logButtonOpts,label:'调试日志'}, danmakuHeatmap:{...heatmapButtonOpts,label:'热度图'}, danmakuList:{...listButtonOpts,label:'弹幕列表'}, danmakuCenter:{...centerButtonOpts,label:'弹幕中心'} };
-  const addBtn=(id)=>{ const cfg=buttonConfigs[id]; if(!cfg) return; if(id==='displayDanmaku') cfg.innerText = danmaku_icons[window.ede.danmakuSwitch]; else if(id==='switchDanmakuInfo') cfg.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0]; else if(id==='filteringDanmaku'){ const lv=parseInt(StorageManager.get('danmakuFilterLevel', 0)||0); cfg.innerText = filter_icons[lv]; } menubar.appendChild(createButton(cfg)); };
+  const buttonConfigs = getButtonConfigs();
+  const addBtn=(id)=> addButtonToBar(menubar, id, buttonConfigs);
   if(window.ede.compactUI){ addBtn('displayDanmaku'); addBtn('danmakuCenter'); }
   else {
     // 外显顺序: 以 buttonOrder 为基准筛选 externalButtons
@@ -282,40 +279,43 @@
   }
   }
 
+  // 按钮配置表（统一定义，避免重复）
+  const getButtonConfigs = () => ({ displayDanmaku:{...displayButtonOpts,label:'弹幕开关'}, filteringDanmaku:{...filterButtonOpts,label:'过滤等级'}, danmakuSettings:{...settingsButtonOpts,label:'弹幕设置'}, switchDanmakuInfo:{...infoSwitchButtonOpts,label:'信息显示'}, searchDanmaku:{...searchButtonOpts,label:'搜索弹幕'}, showDanmakuLog:{...logButtonOpts,label:'调试日志'}, danmakuHeatmap:{...heatmapButtonOpts,label:'热度图'}, danmakuList:{...listButtonOpts,label:'弹幕列表'}, danmakuCenter:{...centerButtonOpts,label:'弹幕中心'} });
+  
+  // 添加按钮到工具栏的通用函数
+  function addButtonToBar(menubar, id, buttonConfigs){
+    const cfg = buttonConfigs[id];
+    if(!cfg) return;
+    if(id === 'displayDanmaku') cfg.innerText = danmaku_icons[window.ede.danmakuSwitch];
+    else if(id === 'switchDanmakuInfo') cfg.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0];
+    else if(id === 'filteringDanmaku') cfg.innerText = filter_icons[parseInt(StorageManager.get('danmakuFilterLevel', 0)||0)];
+    menubar.appendChild(createButton(cfg));
+  }
+
   // 重建工具栏（用于布局设置中实时更新）
   function rebuildToolbar(){
     const bar = document.getElementById('danmakuCtr');
     if(!bar) return;
     const parent = bar.parentNode;
     bar.remove();
-    // 直接在原位置重建，不依赖锚点查找
     ensureToolbarStyles();
     const menubar = document.createElement('div');
     menubar.id = 'danmakuCtr';
     menubar.className = menubarOptions.class;
     if(!window.ede.episode_info) menubar.style.opacity = 0.5;
-    
-    const buttonConfigs = { displayDanmaku:{...displayButtonOpts,label:'弹幕开关'}, filteringDanmaku:{...filterButtonOpts,label:'过滤等级'}, danmakuSettings:{...settingsButtonOpts,label:'弹幕设置'}, switchDanmakuInfo:{...infoSwitchButtonOpts,label:'信息显示'}, searchDanmaku:{...searchButtonOpts,label:'搜索弹幕'}, showDanmakuLog:{...logButtonOpts,label:'调试日志'}, danmakuHeatmap:{...heatmapButtonOpts,label:'热度图'}, danmakuList:{...listButtonOpts,label:'弹幕列表'}, danmakuCenter:{...centerButtonOpts,label:'弹幕中心'} };
-    const addBtn = (id) => {
-      const cfg = buttonConfigs[id];
-      if(!cfg) return;
-      if(id === 'displayDanmaku') cfg.innerText = danmaku_icons[window.ede.danmakuSwitch];
-      else if(id === 'switchDanmakuInfo') cfg.innerText = info_switch_icons[window.ede.showDanmakuInfo?1:0];
-      else if(id === 'filteringDanmaku') cfg.innerText = filter_icons[parseInt(StorageManager.get('danmakuFilterLevel', 0)||0)];
-      menubar.appendChild(createButton(cfg));
-    };
+    const buttonConfigs = getButtonConfigs();
     
     if(window.ede.compactUI){
-      addBtn('displayDanmaku');
-      addBtn('danmakuCenter');
+      addButtonToBar(menubar, 'displayDanmaku', buttonConfigs);
+      addButtonToBar(menubar, 'danmakuCenter', buttonConfigs);
     } else {
       const externalSet = new Set(window.ede.externalButtons || []);
       window.ede.buttonOrder.forEach(id => {
         if(id === 'displayDanmaku' || id === 'danmakuCenter') return;
-        if(externalSet.has(id)) addBtn(id);
+        if(externalSet.has(id)) addButtonToBar(menubar, id, buttonConfigs);
       });
       menubar.insertBefore(createButton({ ...buttonConfigs['displayDanmaku'], innerText: danmaku_icons[window.ede.danmakuSwitch] }), menubar.firstChild);
-      addBtn('danmakuCenter');
+      addButtonToBar(menubar, 'danmakuCenter', buttonConfigs);
     }
     parent.appendChild(menubar);
   }
@@ -376,11 +376,15 @@
       // 用户需要快速切换集数时不应被60秒冷却阻止
 
       let searchResult = await trySearch(animeName);
-      if(!searchResult && originalTitle && originalTitle!==animeName){
+      // 判断搜索结果是否有效（必须有 animes 且不为空）
+      const isValidResult = (r) => r && r.animes && r.animes.length > 0;
+      
+      if(!isValidResult(searchResult) && originalTitle && originalTitle.trim() && originalTitle.toLowerCase() !== animeName.toLowerCase()){
         window.ede.autoMatchStatus='使用原始标题重试搜索';
+        console.log(`[EDE] 中文名「${animeName}」未匹配，尝试原始标题「${originalTitle}」`);
         searchResult = await trySearch(originalTitle);
       }
-      if(!searchResult){
+      if(!isValidResult(searchResult)){
         window.ede.autoMatchStatus='自动匹配失败';
         return null;
       }
@@ -502,7 +506,20 @@
   }
 
   const defaultProxyServers=['https://dd.kumuze.top/'];
-  async function trySearch(name){ if(!window.ede.cacheEnabled) return searchAnimeDirectly(name); const cacheKey=`_search_cache_${encodeURIComponent(name)}`; const cached=localStorage.getItem(cacheKey); if(cached){ const o=JSON.parse(cached); if(o.timestamp > Date.now()-86400000){ window.ede.autoMatchStatus='使用缓存结果'; return o.data; } } return searchAnimeDirectly(name); }
+  async function trySearch(name){ 
+    if(!window.ede.cacheEnabled) return searchAnimeDirectly(name); 
+    const cacheKey=`_search_cache_${encodeURIComponent(name)}`; 
+    const cached=localStorage.getItem(cacheKey); 
+    if(cached){ 
+      const o=JSON.parse(cached); 
+      // 只使用有效的缓存结果（有 animes 且不为空），空结果不缓存以便重试
+      if(o.timestamp > Date.now()-86400000 && o.data && o.data.animes && o.data.animes.length > 0){ 
+        window.ede.autoMatchStatus='使用缓存结果'; 
+        return o.data; 
+      } 
+    } 
+    return searchAnimeDirectly(name); 
+  }
 
   async function searchAnimeDirectly(name){ try { const proxyServer=window.ede.customProxyServer || defaultProxyServers[window.ede.currentProxyIndex]; const url=`${proxyServer}api/v2/search/episodes?anime=${encodeURIComponent(name)}`; const resp=await fetch(url); if(!resp.ok) throw new Error('HTTP '+resp.status); const data=await resp.json(); if(!data || !data.animes || data.animes.length===0) return null; if(window.ede.cacheEnabled){ localStorage.setItem(`_search_cache_${encodeURIComponent(name)}` , JSON.stringify({timestamp:Date.now(),data})); } return data; } catch(e){ if(!window.ede.customProxyServer && window.ede.currentProxyIndex < defaultProxyServers.length-1){ window.ede.currentProxyIndex++; localStorage.setItem('danmakuProxyIndex', window.ede.currentProxyIndex); showTooltip(`切换备用代理 ${window.ede.currentProxyIndex+1}`); return searchAnimeDirectly(name); } console.error('搜索失败', e); return null; } }
 
@@ -719,22 +736,123 @@
     } catch(e){ console.warn('编译过滤资源失败', e); }
   }
   // applyTypeFilters / applyKeywordFilters 已内联到 applyAllFilters，无需独立函数
+  
+  // 弹幕质量评分（用于智能过滤）
+  function scoreDanmaku(c, recentTexts) {
+    let score = 50; // 基础分
+    const text = c.text || '';
+    const len = text.length;
+    
+    // 长度评分：太短或太长扣分，适中加分
+    if(len < 2) score -= 30;        // 单字弹幕（如"草"、"6"）扣分
+    else if(len <= 4) score -= 10;  // 短弹幕轻微扣分
+    else if(len >= 5 && len <= 20) score += 15;  // 适中长度加分
+    else if(len > 50) score -= 20;  // 过长扣分
+    
+    // 重复检测：与最近弹幕相似则扣分
+    if(recentTexts && recentTexts.length > 0) {
+      for(const recent of recentTexts) {
+        if(text === recent) { score -= 40; break; }  // 完全相同
+        if(text.length > 2 && recent.includes(text)) { score -= 20; break; }  // 包含关系
+        if(recent.length > 2 && text.includes(recent)) { score -= 20; break; }
+      }
+    }
+    
+    // 纯符号/表情扣分
+    const pureSymbol = /^[!！?？。，、～~·.…\s]+$/.test(text);
+    if(pureSymbol) score -= 35;
+    
+    // 纯数字扣分（如"666666"）
+    if(/^\d+$/.test(text)) score -= 25;
+    
+    // 重复字符检测（如"哈哈哈哈哈"、"wwwww"）
+    if(len >= 3) {
+      const firstChar = text[0];
+      const repeatRatio = text.split(firstChar).length - 1;
+      if(repeatRatio / len > 0.7) score -= 20;
+    }
+    
+    // 彩色弹幕轻微加分（通常是用户精心发的）
+    if(c.color && c.color !== 'ffffff' && c.color !== '000000') score += 5;
+    
+    // 顶部/底部弹幕加分（通常更有意义）
+    if(c.mode === 'top' || c.mode === 'bottom') score += 10;
+    
+    return Math.max(0, Math.min(100, score));
+  }
+  
   function applyDensityFilter(list){
     let level=parseInt(StorageManager.get('danmakuFilterLevel', 0)||0); if(level===0) return list;
-    const limit = level===4 ? 3 : (9 - level*2);
-    const vertical_limit = level===4 ? 2 : 6;
-    // 使用 Uint16Array 提升数值计数性能（适用于大弹幕数据集）
-    const maxSec = list.length ? Math.ceil(list[list.length-1].time||0) + 10 : 100;
-    const secCount = new Uint16Array(maxSec);
-    const vertCount = new Uint16Array(Math.ceil(maxSec / 3) + 1); // 3s 窗口
-    const out=[];
-    const len = list.length;
-    for(let i=0; i<len; i++){
-      const c=list[i]; const sec = Math.ceil(c.time); const vb = Math.ceil(c.time/3);
-      if(sec >= maxSec) continue; // 安全边界
-      let vc = vertCount[vb]||0; if(vc < vertical_limit){ vertCount[vb]=vc+1; } else { c.mode='rtl'; }
-      let sc = secCount[sec]||0; if(sc < limit){ secCount[sec]=sc+1; out.push(c); }
+    if(!list || !list.length) return list;
+    
+    // 更严格的限制：等级1-4分别为每秒 5/3/2/1 条
+    const limitPerSec = [0, 5, 3, 2, 1][level] || 1;
+    // 质量阈值：等级越高，要求的最低质量分越高
+    const qualityThreshold = [0, 20, 35, 45, 55][level] || 0;
+    // 垂直弹幕限制
+    const vertical_limit = [0, 4, 3, 2, 1][level] || 1;
+    
+    // 先按时间排序
+    const sorted = [...list].sort((a, b) => a.time - b.time);
+    
+    // 计算真正的最大时间
+    let maxTime = 0;
+    for(const c of sorted){ if(c.time > maxTime) maxTime = c.time; }
+    const maxSec = Math.ceil(maxTime) + 10;
+    
+    // 为每条弹幕计算质量分
+    const recentWindow = 5; // 检测重复的窗口大小
+    const recentTexts = [];
+    for(const c of sorted) {
+      c._score = scoreDanmaku(c, recentTexts);
+      recentTexts.push(c.text);
+      if(recentTexts.length > recentWindow) recentTexts.shift();
     }
+    
+    // 按时间分组，每组内按质量分排序后取前 N 条
+    const secGroups = new Map();
+    for(const c of sorted) {
+      const sec = Math.floor(c.time);
+      if(!secGroups.has(sec)) secGroups.set(sec, []);
+      secGroups.get(sec).push(c);
+    }
+    
+    const out = [];
+    const vertCount = new Uint16Array(Math.ceil(maxSec / 3) + 1);
+    
+    for(const [sec, group] of secGroups) {
+      // 按质量分降序排序
+      group.sort((a, b) => b._score - a._score);
+      
+      let count = 0;
+      for(const c of group) {
+        // 质量分过低直接跳过
+        if(c._score < qualityThreshold) continue;
+        
+        // 达到每秒限制则跳过
+        if(count >= limitPerSec) continue;
+        
+        // 垂直弹幕限制
+        const vb = Math.ceil(c.time / 3);
+        if(vb >= 0 && vb < vertCount.length) {
+          if(vertCount[vb] >= vertical_limit && (c.mode === 'top' || c.mode === 'bottom')) {
+            c.mode = 'rtl'; // 转为滚动弹幕
+          } else if(c.mode === 'top' || c.mode === 'bottom') {
+            vertCount[vb]++;
+          }
+        }
+        
+        out.push(c);
+        count++;
+      }
+    }
+    
+    // 清理临时属性
+    for(const c of out) delete c._score;
+    
+    // 按时间重新排序
+    out.sort((a, b) => a.time - b.time);
+    
     return out;
   }
 
@@ -764,19 +882,12 @@
     const whiteShadow='-1px -1px #000, -1px 1px #000, 1px -1px #000, 1px 1px #000';
     const blackShadow='-1px -1px #fff, -1px 1px #fff, 1px -1px #fff, 1px 1px #fff';
     const modeMap={6:'ltr',1:'rtl',5:'top',4:'bottom'};
-    // 来源平台映射：预编译避免循环内重复调用 toLowerCase
-    const sourceMap = new Map([
-      ['bilibili', 'BiliBili'], ['bili', 'BiliBili'],
-      ['acfun', 'AcFun'],
-      ['gamer', 'Gamer'], ['baha', 'Gamer'],
-      ['dandan', 'DanDanPlay'], ['dandanplay', 'DanDanPlay'],
-      ['diyidan', 'Diyidan'], ['5dm', 'Diyidan'],
-      ['iyingdi', 'Iyingdi'], ['异世界', 'Iyingdi']
-    ]);
-    // 来源平台正则匹配：[BiliBili]xxx 或 [AcFun]xxx
+    const sourceMap = new Map([['bilibili','BiliBili'],['bili','BiliBili'],['acfun','AcFun'],['gamer','Gamer'],['baha','Gamer'],['dandan','DanDanPlay'],['dandanplay','DanDanPlay'],['diyidan','Diyidan'],['5dm','Diyidan'],['iyingdi','Iyingdi'],['异世界','Iyingdi']]);
     const sourceReg = /^\[([^\]]+)\]/;
     const arrLen = arr.length;
     const out = new Array(arrLen); let oIdx = 0; let id = 0;
+    // 通用样式生成函数
+    const makeStyle = (colorHex, isBlack) => ({ fontSize:`${fontSize}px`, color:`#${colorHex}`, textShadow: isBlack ? blackShadow : whiteShadow, font: fontDecl, fillStyle:`#${colorHex}`, strokeStyle: isBlack ? '#fff' : '#000', lineWidth: 2 });
     for(let i = 0; i < arrLen; i++){
       const c = arr[i]; if(!c || !c.p) continue;
       const values = c.p.split(','); const modeKey = values[1]; const mode = modeMap[modeKey]; if(!mode) continue;
@@ -1028,37 +1139,17 @@
     dialog.querySelector('#refreshLogBtn').onclick=refreshLog;
     dialog.querySelector('#copyLogBtn').onclick=()=>{ try { const txt=generateLogContent(); const ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); showTooltip('日志已复制到剪贴板'); } catch(e){ console.error(e); showTooltip('复制失败','error'); } };
     dialog.querySelector('#consoleLogBtn').onclick=()=>{ 
+      const logData = {
+        '基础信息': { 'User Agent': navigator.userAgent, '移动设备': isMobile, '版本': EDE_VERSION },
+        '视频状态': { '视频元素': document.querySelector(mediaQueryStr), '视频状态': document.querySelector(mediaQueryStr)?.readyState, '媒体容器': document.querySelector(mediaContainerQueryStr) },
+        '弹幕状态': { '弹幕实例': window.ede?.danmaku, '原始弹幕数': window.ede?.originalCount||0, '过滤后弹幕数': window.ede?.danmaku?.comments?.length||0, '弹幕开关': window.ede?.danmakuSwitch, '加载状态': window.ede?.loading },
+        '匹配信息': { '当前播放信息': window.ede?.episode_info, '自动匹配状态': window.ede?.autoMatchStatus||'未开始' },
+        '设置': { '全局透明度': globalOpacity, '简繁转换': window.ede?.chConvert, '字体大小': (isMobile?fontSizeMobile:fontSizeDesktop)+'px', '过滤等级': localStorage.getItem('danmakuFilterLevel')||0 },
+        '代理与缓存': { '当前代理': window.ede.customProxyServer||'默认', '缓存启用': window.ede.cacheEnabled, 'CORS状态': window.ede?.corsStatus||'未测试', '搜索缓存': Object.keys(localStorage).filter(k=>k.startsWith('_search_cache_')).length+'条', '弹幕缓存': Object.keys(localStorage).filter(k=>k.startsWith('_danmaku_cache_')).length+'条' }
+      };
       console.group(`[EDE v${EDE_VERSION}] 调试日志 - ${new Date().toLocaleString()}`);
-      console.log('%c基础信息', 'color:#00a4dc;font-weight:bold');
-      console.log('User Agent:', navigator.userAgent);
-      console.log('移动设备:', isMobile);
-      console.log('版本:', EDE_VERSION);
-      console.log('%c视频状态', 'color:#00a4dc;font-weight:bold');
-      console.log('视频元素:', document.querySelector(mediaQueryStr));
-      console.log('视频状态:', document.querySelector(mediaQueryStr)?.readyState);
-      console.log('媒体容器:', document.querySelector(mediaContainerQueryStr));
-      console.log('%c弹幕状态', 'color:#00a4dc;font-weight:bold');
-      console.log('弹幕实例:', window.ede?.danmaku);
-      console.log('原始弹幕数:', window.ede?.originalCount || 0);
-      console.log('过滤后弹幕数:', window.ede?.danmaku?.comments?.length || 0);
-      console.log('弹幕开关:', window.ede?.danmakuSwitch);
-      console.log('加载状态:', window.ede?.loading);
-      console.log('%c匹配信息', 'color:#00a4dc;font-weight:bold');
-      console.log('当前播放信息:', window.ede?.episode_info);
-      console.log('自动匹配状态:', window.ede?.autoMatchStatus || '未开始');
-      console.log('%c设置', 'color:#00a4dc;font-weight:bold');
-      console.log('全局透明度:', globalOpacity);
-      console.log('简繁转换:', window.ede?.chConvert);
-      console.log('字体大小:', isMobile?fontSizeMobile:fontSizeDesktop, 'px');
-      console.log('过滤等级:', localStorage.getItem('danmakuFilterLevel')||0);
-      console.log('%c代理与缓存', 'color:#00a4dc;font-weight:bold');
-      console.log('当前代理:', window.ede.customProxyServer || '默认');
-      console.log('缓存启用:', window.ede.cacheEnabled);
-      console.log('CORS状态:', window.ede?.corsStatus || '未测试');
-      const cacheKeys=Object.keys(localStorage);
-      console.log('搜索缓存:', cacheKeys.filter(k=>k.startsWith('_search_cache_')).length, '条');
-      console.log('弹幕缓存:', cacheKeys.filter(k=>k.startsWith('_danmaku_cache_')).length, '条');
-      if(window.ede?.lastError) { console.log('%c错误信息', 'color:#ff6b6b;font-weight:bold'); console.error('最后错误:', window.ede.lastError); }
+      Object.entries(logData).forEach(([section, data])=>{ console.log(`%c${section}`, 'color:#00a4dc;font-weight:bold'); Object.entries(data).forEach(([k,v])=>console.log(k+':', v)); });
+      if(window.ede?.lastError){ console.log('%c错误信息', 'color:#ff6b6b;font-weight:bold'); console.error('最后错误:', window.ede.lastError); }
       console.groupEnd();
       showTooltip('已输出到控制台 (F12查看)');
     };
@@ -1120,8 +1211,8 @@ ${g('═══════ 错误信息 ═══════')}
 ${h('最后错误','#ff6b6b')}: ${window.ede?.lastError || '无'}
 ${h('API响应')}: ${window.ede?.lastApiResponse || '无'}`; 
   }
-  function generateLogContent(){ const proxyDisplay = window.ede.customProxyServer ? window.ede.customProxyServer : '默认代理'; let cacheSize=0; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k.startsWith('_danmaku_cache_')||k.startsWith('_search_cache_')) cacheSize+=localStorage.getItem(k).length; }
-    return `[EDE v${EDE_VERSION}] 调试日志 - ${new Date().toLocaleString()}\n\nUser Agent: ${navigator.userAgent}\n移动设备: ${isMobile}\n视频元素: ${!!document.querySelector(mediaQueryStr)}\n视频状态: ${document.querySelector(mediaQueryStr)?.readyState}\n弹幕状态: ${!!window.ede?.danmaku}\n原始弹幕数: ${window.ede?.originalCount || 0}\n当前弹幕数: ${window.ede?.danmaku?.comments?.length || 0}\n媒体容器: ${!!document.querySelector(mediaContainerQueryStr)}\n弹幕开关: ${window.ede?.danmakuSwitch}\n全局透明度: ${globalOpacity}\n简繁转换: ${window.ede?.chConvert}\n加载状态: ${window.ede?.loading}\n当前播放信息: ${JSON.stringify(window.ede?.episode_info, null, 2)}\n字体大小: ${isMobile?fontSizeMobile:fontSizeDesktop}px\n当前代理: ${proxyDisplay}\n最后错误: ${window.ede?.lastError || '无'}\nCORS状态: ${window.ede?.corsStatus || '未测试'}\n自动匹配状态: ${window.ede?.autoMatchStatus || '未开始'}\nAPI响应: ${window.ede?.lastApiResponse || '无'}\n缓存信息:\n- 搜索缓存: ${Object.keys(localStorage).filter(k=>k.startsWith('_search_cache_')).length} 条\n- 弹幕缓存: ${Object.keys(localStorage).filter(k=>k.startsWith('_danmaku_cache_')).length} 条\n- 总大小: ${(cacheSize/1024/1024).toFixed(2)} MB`; }
+  // 纯文本版日志（复用HTML版并去除标签）
+  function generateLogContent(){ return generateLogContentHtml().replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>'); }
 
   // ===== 弹幕列表查看对话框（增强版）=====
   function showDanmakuListDialog(){
@@ -1879,7 +1970,8 @@ ${h('API响应')}: ${window.ede?.lastApiResponse || '无'}`;
   }
 
   // ===== 实时弹幕密度图（嵌入进度条上方） =====
-  function buildDanmakuDensityData(){ try { const list=window.ede.filteredComments||window.ede.parsedComments; if(!list||!list.length){ window.ede._densityData=null; return; } const lastTime=list[list.length-1].time||0; const duration = Math.max(lastTime, getActiveVideo()?.duration||0); // 动态bucket：短视频1秒/桶，长视频按比例增大（最高5秒/桶），避免溢出
+  // 热度图应基于原始弹幕数据，不受密度过滤影响，以真实反映弹幕分布
+  function buildDanmakuDensityData(){ try { const list=window.ede.parsedComments; if(!list||!list.length){ window.ede._densityData=null; return; } const lastTime=list[list.length-1].time||0; const duration = Math.max(lastTime, getActiveVideo()?.duration||0); // 动态bucket：短视频1秒/桶，长视频按比例增大（最高5秒/桶），避免溢出
     const bucketSize = duration > 3600 ? 5 : (duration > 1800 ? 3 : (duration > 600 ? 2 : 1)); const bucketCount=Math.ceil(duration/bucketSize)+1; const buckets=new Array(bucketCount).fill(0); for(const c of list){ const idx=Math.floor(c.time/bucketSize); if(idx>=0 && idx<bucketCount) buckets[idx]++; } const max=buckets.reduce((a,b)=>b>a?b:a,0)||1; window.ede._densityData={ buckets,max,bucketSize,duration }; } catch(e){ console.warn('密度数据失败',e); window.ede._densityData=null; } }
   function getProgressSlider(){ return document.querySelector(`${mediaContainerQueryStr} .videoOsdPositionSliderContainer`)||document.querySelector('.videoOsdPositionSliderContainer'); }
   function ensureDensityOverlay(){ const host=getProgressSlider(); if(!host) return null; if(!host.classList.contains('ede-density-host')){ host.classList.add('ede-density-host'); host.style.position='relative'; }
