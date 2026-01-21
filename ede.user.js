@@ -3,7 +3,7 @@
 // @namespace    https://github.com/kumu-ze/dd-danmaku
 // @description  Emby 弹幕插件：弹幕获取/过滤/外观/热度图/快捷设置
 // @author       kumuze, RyoLee
-// @version      2.4.0
+// @version      2.4.1
 // @license      MIT
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
@@ -51,7 +51,7 @@
   const fontSizeMobile = 15;
   if (/Mobi|Android|iPhone/i.test(navigator.userAgent)) isMobile = true;
   // 版本号（用于弹幕中心显示）
-  const EDE_VERSION = '2.4.0';
+  const EDE_VERSION = '2.4.1';
 
   // StorageManager (阶段1) - 带内存缓存以减少 localStorage 访问
   const StorageManager = {
@@ -161,13 +161,13 @@
       <div class='qa-foot'>所有设置即时生效并自动保存</div>
     </div>`;
     document.body.appendChild(dialog); dialog.showModal();
-    const bindSlider=(id,key,cb)=>{ const el=dialog.querySelector('#'+id); const num=dialog.querySelector('#'+id+'Num'); paintRangeInput(el); el.addEventListener('input',e=>{ const v=e.target.value; localStorage.setItem(key,v); if(num) num.textContent=v; if(cb) cb(v); paintRangeInput(e.target); }); };
-    bindSlider('qaFont','danmakuFontSize',()=>reloadDanmaku('reload'));
-    bindSlider('qaOpacity','danmakuTransparencyLevel',v=>{ globalOpacity=v/100; });
+    const bindSlider=(id,key,cb)=>{ const el=dialog.querySelector('#'+id); const num=dialog.querySelector('#'+id+'Num'); paintRangeInput(el); el.addEventListener('input',e=>{ const v=e.target.value; StorageManager.set(key,v); if(num) num.textContent=v; if(cb) cb(v); paintRangeInput(e.target); }); };
+    bindSlider('qaFont','danmakuFontSize',()=>{ if(window.ede.parsedComments){ updateParsedCommentsStyle(); rebuildDanmakuFromParsed(); } else reloadDanmaku('reload'); });
+    bindSlider('qaOpacity','danmakuTransparencyLevel',v=>{ globalOpacity=parseInt(v)/100; if(window.ede.danmaku) window.ede.danmaku.resize(); });
     bindSlider('qaSpeed','danmakuSpeed',v=>{ if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
     bindSlider('qaTimelineOp','edeTimelineOpacity',v=>{ document.documentElement.style.setProperty('--ede-pbp-unplayed-op', (v/100).toFixed(2)); });
     bindSlider('qaHeatmapOp','edeHeatmapOpacity',v=>{ document.documentElement.style.setProperty('--ede-heatmap-opacity', (v/100).toFixed(2)); });
-    const tl=dialog.querySelector('#qaTimeline'); tl.onchange=e=>{ localStorage.setItem('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
+    const tl=dialog.querySelector('#qaTimeline'); tl.onchange=e=>{ StorageManager.set('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
     dialog.querySelector('#qaShowHeatmap').onclick=()=>{ dialog.remove(); showHeatmapDialog(); };
     dialog.querySelector('#qaClose').onclick=()=>dialog.remove();
     dialog.querySelector('#qaReset').onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; const defs={qaFont:defF,qaOpacity:100,qaSpeed:200,qaTimelineOp:85,qaHeatmapOp:80}; Object.entries(defs).forEach(([id,val])=>{ const el=dialog.querySelector('#'+id); if(el){ el.value=val; el.dispatchEvent(new Event('input')); } }); tl.checked=true; tl.dispatchEvent(new Event('change')); };
@@ -187,7 +187,7 @@
   class EDE {
     constructor() {
       this.chConvert = StorageManager.get('chConvert', 1);
-      this.danmakuSwitch = StorageManager.get('danmakuSwitch', 0);
+      this.danmakuSwitch = StorageManager.get('danmakuSwitch', 1);
       this.danmaku = null;
       this.episode_info = null;
       this.ob = null;
@@ -855,6 +855,19 @@
     out.sort((a, b) => a.time - b.time);
     
     return out;
+  }
+
+  // 动态更新已解析弹幕的样式（用于实时调整字体大小）
+  function updateParsedCommentsStyle(){
+    if(!window.ede.parsedComments) return;
+    const fontSize = parseInt(StorageManager.get('danmakuFontSize', isMobile?fontSizeMobile:fontSizeDesktop));
+    const fontDecl = `${fontSize}px sans-serif`;
+    for(const c of window.ede.parsedComments){
+      if(c.style){
+        c.style.fontSize = `${fontSize}px`;
+        c.style.font = fontDecl;
+      }
+    }
   }
 
   function rebuildDanmakuFromParsed(){ if(!window.ede.parsedComments){ reloadDanmaku('reload'); return; } if(window.ede.danmaku){ window.ede.danmaku.clear(); window.ede.danmaku.destroy(); window.ede.danmaku=null; } const videoElement=getActiveVideo(); const container=getActiveContainer(); if(!videoElement || !container){ reloadDanmaku('reload'); return; } const filtered=applyAllFilters(window.ede.parsedComments); const savedSpeed = parseInt(StorageManager.get('danmakuSpeed', 200)); window.ede.danmaku=new Danmaku({container,media:videoElement,comments:filtered,engine:'canvas',speed:savedSpeed}); window.ede.filteredComments=filtered; buildSecondIndex(filtered, videoElement); appendvideoOsdDanmakuInfo(filtered.length); window.ede.danmakuSwitch==1? window.ede.danmaku.show() : window.ede.danmaku.hide(); buildDanmakuDensityData(); renderDanmakuTimeline(); }
@@ -1692,12 +1705,12 @@ ${h('API响应')}: ${window.ede?.lastApiResponse || '无'}`;
         <div class='toggle-line' style='display:flex;flex-wrap:wrap;gap:1em;margin-top:4px;'><label style='font-size:12px;display:flex;align-items:center;gap:4px;'><input type='checkbox' id='apTimeline' ${state.timeline?'checked':''}> 热度轨迹</label><label style='font-size:12px;display:flex;align-items:center;gap:4px;'><input type='checkbox' id='apInfo' ${window.ede.showDanmakuInfo?'checked':''}> 信息栏</label></div>
         <div class='note'>数值实时显示；速度越大滚动越快。</div></div></div>`;
       const bindSlider=(id,cb)=>{ const el=sec.querySelector('#'+id); const num=sec.querySelector('#'+id+'Num'); const paint=(r)=>{ paintRangeInput(r); if(num) num.textContent=r.value; }; paint(el); el.addEventListener('input',e=>{ cb(e.target.value); paint(e.target); }); };
-      bindSlider('apFont',v=>{ localStorage.setItem('danmakuFontSize', v); if(window.ede.danmaku) reloadDanmaku('reload'); });
-      bindSlider('apOpacity',v=>{ localStorage.setItem('danmakuTransparencyLevel', v); globalOpacity=v/100; });
-  bindSlider('apSpeed',v=>{ localStorage.setItem('danmakuSpeed', v); if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
-  bindSlider('apTimelineOp',v=>{ localStorage.setItem('edeTimelineOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-pbp-unplayed-op', val); });
-      bindSlider('apHeatmapOp',v=>{ localStorage.setItem('edeHeatmapOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-heatmap-opacity', val); });
-      sec.querySelector('#apTimeline').onchange=e=>{ localStorage.setItem('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
+      bindSlider('apFont',v=>{ StorageManager.set('danmakuFontSize', v); if(window.ede.parsedComments){ updateParsedCommentsStyle(); rebuildDanmakuFromParsed(); } else reloadDanmaku('reload'); });
+      bindSlider('apOpacity',v=>{ StorageManager.set('danmakuTransparencyLevel', v); globalOpacity=parseInt(v)/100; });
+      bindSlider('apSpeed',v=>{ StorageManager.set('danmakuSpeed', v); if(window.ede.danmaku) window.ede.danmaku.speed=parseInt(v); });
+      bindSlider('apTimelineOp',v=>{ StorageManager.set('edeTimelineOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-pbp-unplayed-op', val); });
+      bindSlider('apHeatmapOp',v=>{ StorageManager.set('edeHeatmapOpacity', v); const val=(v/100).toFixed(2); document.documentElement.style.setProperty('--ede-heatmap-opacity', val); });
+      sec.querySelector('#apTimeline').onchange=e=>{ StorageManager.set('danmakuTimelineEnabled', e.target.checked); renderDanmakuTimeline(); };
       sec.querySelector('#apInfo').onchange=e=>{ window.ede.showDanmakuInfo=e.target.checked; localStorage.setItem('showDanmakuInfo', e.target.checked); const info=document.querySelector('#videoOsdDanmakuTitle'); if(info) info.style.display=e.target.checked?'block':'none'; const btn=document.querySelector('#switchDanmakuInfo .md-icon'); if(btn) btn.innerText= info_switch_icons[e.target.checked?1:0]; };
   const resetBtn=sec.querySelector('#apReset'); if(resetBtn){ resetBtn.onclick=()=>{ const defF=isMobile?fontSizeMobile:fontSizeDesktop; const defaults={apFont:defF,apOpacity:100,apSpeed:200,apTimelineOp:85,apHeatmapOp:80}; Object.entries(defaults).forEach(([id,val])=>{ const el=sec.querySelector('#'+id); if(!el) return; el.value=val; el.dispatchEvent(new Event('input')); }); sec.querySelector('#apTimeline').checked=true; sec.querySelector('#apTimeline').dispatchEvent(new Event('change')); }; }
     }
